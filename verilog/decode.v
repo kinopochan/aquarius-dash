@@ -1643,7 +1643,7 @@ module decode(
                   ID_IF_ISSUE = 1'b1;
                   DISPATCH = 1'b1;
                 end
-              4'b0?1? : // 3xx2, 3xx3, 3xx6, 3xx7 
+              4'b0?1? : // 3xx2, 3xx3, 3xx6, 3xx7
                 begin
                   EX_RDREG_X = 1'b1;
                   EX_REGNUM_X = INSTR_STATE[11:8]; // Rn
@@ -1651,6 +1651,26 @@ module decode(
                   EX_REGNUM_Y = INSTR_STATE[7:4]; // Rm
                   EX_CMPCOM = INSTR_STATE[2:0];
                   EX_T_CMPSET = 1'b1;
+                  ID_INCPC = 1'b1;
+                  ID_IF_ISSUE = 1'b1;
+                  DISPATCH = 1'b1;
+                end
+        //----------------------------------------------
+        // DIVU Rm, Rn (3nm1) / DIVS Rm, Rn (3nm9)
+        // Custom integer division: MACH=quotient, MACL=remainder
+        //----------------------------------------------
+              4'b?001 : // 3nm1 (DIVU) / 3nm9 (DIVS)
+                begin
+                  MAC_STALL_SENSE = 1'b1;
+                  EX_MAC_BUSY = (NEXT_ID_STALL)? 1'b0:1'b1;
+                  EX_RDREG_X = 1'b1;
+                  EX_REGNUM_X = INSTR_STATE[11:8]; // Rn (dividend)
+                  EX_RDREG_Y = 1'b1;
+                  EX_REGNUM_Y = INSTR_STATE[7:4];  // Rm (divisor)
+                  EX_MACSEL1 = 2'b00; // XBUS -> MACIN1
+                  EX_MACSEL2 = 2'b00; // YBUS -> MACIN2
+                  EX_MULCOM1 = 1'b1;
+                  EX_MULCOM2 = {1'b1, INSTR_STATE[14:12], INSTR_STATE[3:0]};
                   ID_INCPC = 1'b1;
                   ID_IF_ISSUE = 1'b1;
                   DISPATCH = 1'b1;

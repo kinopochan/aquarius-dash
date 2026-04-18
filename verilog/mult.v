@@ -150,6 +150,18 @@ module mult(
     reg  [3:0] NEXTSTATE; // next state
     reg  MAC_DISPATCH;    // mult can accept next new operation
 
+//-----------------
+// Division Signals
+//-----------------
+    reg  [32:0] div_remainder; // 33-bit for sign tracking (non-restoring)
+    reg  [31:0] div_quotient;
+    reg  [31:0] div_divisor;
+    reg  [5:0]  div_counter;   // 33=setup, 32..1=iteration, 0=done
+    reg         div_signed_op; // 0=DIVU, 1=DIVS
+    reg         div_neg_q;     // negate quotient at end
+    reg         div_neg_r;     // negate remainder at end
+    wire        div_write;     // write MACH/MACL with division result
+
 //-------------------
 // Main State Machine
 //-------------------
@@ -175,6 +187,8 @@ module mult(
                     8'h87   : STATE <= `MULL;
                     8'hAF   : STATE <= `MULSW;
                     8'hAE   : STATE <= `MULUW;
+                    8'hB1   : STATE <= `DIVOP; // DIVU (3nm1)
+                    8'hB9   : STATE <= `DIVOP; // DIVS (3nm9)
                     default : STATE <= `NOP;
                 endcase
             end
@@ -213,7 +227,7 @@ module mult(
 
 // MULUW   : A=M1, BH=LowerB, unsign MULT, C=PM,       MACL<=ADD > NOP
 
-    always @(STATE or SLOT or MULCOM2 or MAC_S)
+    always @(STATE or SLOT or MULCOM2 or MAC_S or div_counter)
     begin 
         case (STATE)
             `NOP    :begin
@@ -306,9 +320,21 @@ module mult(
                       MAC_DISPATCH <= 1'b1;
                       NEXTSTATE <= `NOP;
                      end
+            `DIVOP  :begin
+                      {SELA,SHIFT,SIGN,SIZE,ADD,LATMACH,LATMACL,ZH}<=9'b0_000_00_000;
+                      if (div_counter == 6'd0) begin
+                          MAC_BUSY <= 1'b0;
+                          MAC_DISPATCH <= 1'b1;
+                          NEXTSTATE <= `NOP;
+                      end else begin
+                          MAC_BUSY <= 1'b1;
+                          MAC_DISPATCH <= 1'b0;
+                          NEXTSTATE <= `DIVOP;
+                      end
+                     end
             default : begin
                       {SELA,SHIFT,SIGN,SIZE,ADD,LATMACH,LATMACL,ZH}<=9'b0_000_00_000;
-                      MAC_BUSY <= 1'b0;     
+                      MAC_BUSY <= 1'b0;
                       MAC_DISPATCH <= 1'b1;
                       NEXTSTATE <= `NOP;
                      end
@@ -707,6 +733,10 @@ module mult(
             begin
                 MACH <= ADDRESULT2[63:32];
             end
+        else if (div_write)
+            begin
+                MACH <= div_quotient;
+            end
     end
 
 //-----
@@ -727,6 +757,124 @@ module mult(
             begin
                 MACL <= ADDRESULT2[31:0];
             end
+        else if (div_write)
+            begin
+                MACL <= div_remainder[31:0];
+            end
+    end
+
+//***************************
+// Division Unit (DIVU/DIVS)
+//***************************
+// Non-restoring division algorithm, 32 cycles.
+// DIVU (3nm1): unsigned Rn / Rm -> MACH=quotient, MACL=remainder
+// DIVS (3nm9): signed   Rn / Rm -> MACH=quotient, MACL=remainder
+//
+// div_counter usage:
+//   33    : setup (latch operands, handle special cases, abs for signed)
+//   32..1 : 32 iterations of non-restoring division
+//   0     : done, div_write asserts to update MACH/MACL
+//
+// Special cases (RISC-V compatible):
+//   divisor==0           : quotient=0xFFFFFFFF, remainder=dividend
+//   signed MIN / -1      : quotient=0x80000000, remainder=0
+
+    assign div_write = (STATE == `DIVOP) & (div_counter == 6'd0);
+
+    // Division combinational signals (non-restoring step)
+    wire [32:0] div_shifted_rem = {div_remainder[31:0], div_quotient[31]};
+    wire [32:0] div_sub_result  = div_shifted_rem - {1'b0, div_divisor};
+    wire [32:0] div_add_result  = div_shifted_rem + {1'b0, div_divisor};
+    wire [32:0] div_new_rem     = div_remainder[32] ? div_add_result : div_sub_result;
+    wire        div_quot_bit    = ~div_new_rem[32]; // 1 if remainder >= 0
+
+    // Final correction: if remainder negative after last iteration, add divisor
+    wire [32:0] div_corrected_rem = div_new_rem[32] ? (div_new_rem + {1'b0, div_divisor})
+                                                    : div_new_rem;
+
+    // Division data path (counter, flags, and computation in one block)
+    always @(posedge CLK or posedge RST)
+    begin
+        if (RST) begin
+            div_counter   <= 6'd0;
+            div_signed_op <= 1'b0;
+            div_remainder <= 33'd0;
+            div_quotient  <= 32'd0;
+            div_divisor   <= 32'd0;
+            div_neg_q     <= 1'b0;
+            div_neg_r     <= 1'b0;
+        end else if (MAC_DISPATCH & SLOT) begin
+            case (MULCOM2)
+                8'hB1: begin
+                    div_counter   <= 6'd33;
+                    div_signed_op <= 1'b0;
+                    div_remainder <= 33'd0;
+                    div_neg_q     <= 1'b0;
+                    div_neg_r     <= 1'b0;
+                end
+                8'hB9: begin
+                    div_counter   <= 6'd33;
+                    div_signed_op <= 1'b1;
+                    div_remainder <= 33'd0;
+                    div_neg_q     <= 1'b0;
+                    div_neg_r     <= 1'b0;
+                end
+                default: ;
+            endcase
+        end else if (STATE == `DIVOP) begin
+            if (div_counter == 6'd33) begin
+                //---------------------------
+                // Setup: latch and special cases
+                //---------------------------
+                if (M2 == 32'd0) begin
+                    // Zero division: quot=all-1s, rem=dividend
+                    div_quotient  <= 32'hFFFFFFFF;
+                    div_remainder <= {1'b0, M1};
+                    div_counter   <= 6'd0; // skip to done
+                end else if (div_signed_op && M1 == 32'h80000000 && M2 == 32'hFFFFFFFF) begin
+                    // Signed overflow: MIN / -1
+                    div_quotient  <= 32'h80000000;
+                    div_remainder <= 33'd0;
+                    div_counter   <= 6'd0; // skip to done
+                end else if (div_signed_op) begin
+                    // Signed normal: take absolute values
+                    div_neg_q    <= M1[31] ^ M2[31];
+                    div_neg_r    <= M1[31];
+                    div_quotient <= M1[31] ? (~M1 + 32'd1) : M1;
+                    div_divisor  <= M2[31] ? (~M2 + 32'd1) : M2;
+                    div_remainder <= 33'd0;
+                    div_counter   <= 6'd32;
+                end else begin
+                    // Unsigned normal
+                    div_quotient  <= M1;
+                    div_divisor   <= M2;
+                    div_remainder <= 33'd0;
+                    div_counter   <= 6'd32;
+                end
+            end else if (div_counter > 6'd1) begin
+                //---------------------------
+                // Iteration: non-restoring division step
+                //---------------------------
+                div_remainder <= div_new_rem;
+                div_quotient  <= {div_quotient[30:0], div_quot_bit};
+                div_counter   <= div_counter - 6'd1;
+            end else if (div_counter == 6'd1) begin
+                //---------------------------
+                // Last iteration + final correction + sign
+                //---------------------------
+                if (div_neg_q)
+                    div_quotient <= ~{div_quotient[30:0], div_quot_bit} + 32'd1;
+                else
+                    div_quotient <= {div_quotient[30:0], div_quot_bit};
+
+                if (div_neg_r)
+                    div_remainder <= ~{1'b0, div_corrected_rem[31:0]} + 33'd1;
+                else
+                    div_remainder <= {1'b0, div_corrected_rem[31:0]};
+
+                div_counter <= 6'd0;
+            end
+        end
     end
 
 //======================================================

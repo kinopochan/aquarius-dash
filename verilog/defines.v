@@ -191,6 +191,7 @@
 `define MULL2       4'b1100
 `define MULSW       4'b1101
 `define MULUW       4'b1110
+`define DIVOP       4'b1111
 
 
 //======================================================
