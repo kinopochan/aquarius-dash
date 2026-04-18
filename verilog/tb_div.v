@@ -177,6 +177,120 @@ module tb_div;
         check(32'hFFFFFFFF, 32'd0, "1 / -1");
 
         //===========================================
+        // Additional edge case tests
+        //===========================================
+        $display("--- Additional edge cases ---");
+
+        // Powers of 2
+        issue_div(8'hB1, 32'hFFFFFFFF, 32'h80000000);
+        check(32'd1, 32'h7FFFFFFF, "FFFFFFFF / 80000000");
+
+        issue_div(8'hB1, 32'h80000000, 32'h80000000);
+        check(32'd1, 32'd0, "80000000 / 80000000");
+
+        issue_div(8'hB1, 32'd1, 32'hFFFFFFFF);
+        check(32'd0, 32'd1, "1 / FFFFFFFF");
+
+        issue_div(8'hB1, 32'hFFFFFFFF, 32'hFFFFFFFF);
+        check(32'd1, 32'd0, "FFFFFFFF / FFFFFFFF");
+
+        issue_div(8'hB1, 32'hFFFFFFFE, 32'hFFFFFFFF);
+        check(32'd0, 32'hFFFFFFFE, "FFFFFFFE / FFFFFFFF");
+
+        // Small values
+        issue_div(8'hB1, 32'd1, 32'd1);
+        check(32'd1, 32'd0, "1 / 1");
+
+        issue_div(8'hB1, 32'd2, 32'd3);
+        check(32'd0, 32'd2, "2 / 3");
+
+        issue_div(8'hB1, 32'd255, 32'd16);
+        check(32'd15, 32'd15, "255 / 16");
+
+        // Large quotient
+        issue_div(8'hB1, 32'hFFFFFFFF, 32'd3);
+        check(32'h55555555, 32'd0, "FFFFFFFF / 3");
+
+        issue_div(8'hB1, 32'hFFFFFFFF, 32'd7);
+        check(32'h24924924, 32'd3, "FFFFFFFF / 7");
+
+        issue_div(8'hB1, 32'hFFFFFFFF, 32'd10);
+        check(32'h19999999, 32'd5, "FFFFFFFF / 10");
+
+        // Signed edge cases
+        issue_div(8'hB9, 32'h80000000, 32'd1);
+        check(32'h80000000, 32'd0, "MIN / 1 (signed)");
+
+        issue_div(8'hB9, 32'h80000000, 32'd2);
+        check(32'hC0000000, 32'd0, "MIN / 2 (signed)");
+
+        issue_div(8'hB9, 32'h80000001, 32'hFFFFFFFF);
+        check(32'h7FFFFFFF, 32'd0, "MIN+1 / -1 (signed)");
+
+        //===========================================
+        // Random unsigned tests
+        //===========================================
+        $display("--- Random unsigned tests (1000 cases) ---");
+        begin : random_unsigned
+            integer i;
+            reg [31:0] a, b;
+            reg [31:0] exp_q, exp_r;
+            reg random_fail;
+            random_fail = 0;
+            for (i = 0; i < 1000; i = i + 1) begin
+                a = $random;
+                b = $random;
+                if (b == 0) b = 32'd1; // avoid zero div in random tests
+                exp_q = a / b;
+                exp_r = a % b;
+                issue_div(8'hB1, a, b);
+                test_num = test_num + 1;
+                if (MACH === exp_q && MACL === exp_r) begin
+                    pass_count = pass_count + 1;
+                end else begin
+                    $display("FAIL test %0d: DIVU %08X / %08X = %08X r %08X (exp %08X r %08X)",
+                             test_num, a, b, MACH, MACL, exp_q, exp_r);
+                    fail_count = fail_count + 1;
+                    random_fail = 1;
+                end
+            end
+            if (!random_fail)
+                $display("  All 1000 random unsigned tests passed");
+        end
+
+        //===========================================
+        // Random signed tests
+        //===========================================
+        $display("--- Random signed tests (1000 cases) ---");
+        begin : random_signed
+            integer i;
+            reg signed [31:0] a, b;
+            reg signed [31:0] exp_q, exp_r;
+            reg random_fail;
+            random_fail = 0;
+            for (i = 0; i < 1000; i = i + 1) begin
+                a = $random;
+                b = $random;
+                if (b == 0) b = 32'sd1;
+                if (a == 32'sh80000000 && b == -32'sd1) b = 32'sd1; // avoid overflow
+                exp_q = a / b;
+                exp_r = a % b;
+                issue_div(8'hB9, a, b);
+                test_num = test_num + 1;
+                if (MACH === exp_q && MACL === exp_r) begin
+                    pass_count = pass_count + 1;
+                end else begin
+                    $display("FAIL test %0d: DIVS %08X / %08X = %08X r %08X (exp %08X r %08X)",
+                             test_num, a, b, MACH, MACL, exp_q, exp_r);
+                    fail_count = fail_count + 1;
+                    random_fail = 1;
+                end
+            end
+            if (!random_fail)
+                $display("  All 1000 random signed tests passed");
+        end
+
+        //===========================================
         // Summary
         //===========================================
         $display("");

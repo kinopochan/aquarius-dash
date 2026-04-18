@@ -151,16 +151,304 @@ module mult(
     reg  MAC_DISPATCH;    // mult can accept next new operation
 
 //-----------------
-// Division Signals
+// Division Signals (DSP-based Newton-Raphson reciprocal)
 //-----------------
-    reg  [32:0] div_remainder; // 33-bit for sign tracking (non-restoring)
+    reg  [32:0] div_remainder;
     reg  [31:0] div_quotient;
-    reg  [31:0] div_divisor;
-    reg  [5:0]  div_counter;   // 33=setup, 32..1=iteration, 0=done
+    reg  [5:0]  div_counter;   // 25=setup, 24..1=NR+verify, 0=done
     reg         div_signed_op; // 0=DIVU, 1=DIVS
     reg         div_neg_q;     // negate quotient at end
     reg         div_neg_r;     // negate remainder at end
     wire        div_write;     // write MACH/MACL with division result
+
+    reg  [31:0] div_d_norm;    // normalized divisor (MSB=1)
+    reg  [31:0] div_recip;     // reciprocal estimate (Q2.30)
+    reg  [31:0] div_dividend;  // dividend (absolute value)
+    reg  [31:0] div_original_d;// original divisor (absolute value)
+    reg  [4:0]  div_shift;     // CLZ result
+    reg         div_load_m1;   // load M1 from division logic
+    reg         div_load_m2;   // load M2 from division logic
+    reg  [31:0] div_m1_val;    // value to load into M1
+    reg  [31:0] div_m2_val;    // value to load into M2
+    reg         ZL;            // zero MACL input to adder (for chained multiplies)
+
+    // Reciprocal LUT ROM - 256 entries indexed by d_norm[30:23]
+    // LUT[i] = round(2^39 / (256 + i)), gives 1/d in Q2.30
+    reg  [31:0] recip_rom [0:255];
+
+    // CLZ (count leading zeros) - combinational
+    function [4:0] clz32;
+        input [31:0] val;
+        reg [4:0] n;
+        begin
+            n = 5'd0;
+            if (val[31:16] == 16'd0) begin n = n + 5'd16; val = val << 16; end
+            if (val[31:24] == 8'd0)  begin n = n + 5'd8;  val = val << 8;  end
+            if (val[31:28] == 4'd0)  begin n = n + 5'd4;  val = val << 4;  end
+            if (val[31:30] == 2'd0)  begin n = n + 5'd2;  val = val << 2;  end
+            if (val[31]    == 1'd0)  begin n = n + 5'd1;  end
+            clz32 = n;
+        end
+    endfunction
+
+    initial begin
+        recip_rom[0] = 32'd2147483648;
+        recip_rom[1] = 32'd2139127680;
+        recip_rom[2] = 32'd2130836488;
+        recip_rom[3] = 32'd2122609320;
+        recip_rom[4] = 32'd2114445438;
+        recip_rom[5] = 32'd2106344115;
+        recip_rom[6] = 32'd2098304633;
+        recip_rom[7] = 32'd2090326289;
+        recip_rom[8] = 32'd2082408386;
+        recip_rom[9] = 32'd2074550241;
+        recip_rom[10] = 32'd2066751180;
+        recip_rom[11] = 32'd2059010539;
+        recip_rom[12] = 32'd2051327664;
+        recip_rom[13] = 32'd2043701910;
+        recip_rom[14] = 32'd2036132644;
+        recip_rom[15] = 32'd2028619239;
+        recip_rom[16] = 32'd2021161080;
+        recip_rom[17] = 32'd2013757560;
+        recip_rom[18] = 32'd2006408080;
+        recip_rom[19] = 32'd1999112051;
+        recip_rom[20] = 32'd1991868891;
+        recip_rom[21] = 32'd1984678028;
+        recip_rom[22] = 32'd1977538899;
+        recip_rom[23] = 32'd1970450946;
+        recip_rom[24] = 32'd1963413621;
+        recip_rom[25] = 32'd1956426384;
+        recip_rom[26] = 32'd1949488702;
+        recip_rom[27] = 32'd1942600049;
+        recip_rom[28] = 32'd1935759908;
+        recip_rom[29] = 32'd1928967768;
+        recip_rom[30] = 32'd1922223125;
+        recip_rom[31] = 32'd1915525484;
+        recip_rom[32] = 32'd1908874354;
+        recip_rom[33] = 32'd1902269252;
+        recip_rom[34] = 32'd1895709703;
+        recip_rom[35] = 32'd1889195237;
+        recip_rom[36] = 32'd1882725390;
+        recip_rom[37] = 32'd1876299706;
+        recip_rom[38] = 32'd1869917734;
+        recip_rom[39] = 32'd1863579030;
+        recip_rom[40] = 32'd1857283155;
+        recip_rom[41] = 32'd1851029676;
+        recip_rom[42] = 32'd1844818167;
+        recip_rom[43] = 32'd1838648207;
+        recip_rom[44] = 32'd1832519380;
+        recip_rom[45] = 32'd1826431275;
+        recip_rom[46] = 32'd1820383490;
+        recip_rom[47] = 32'd1814375623;
+        recip_rom[48] = 32'd1808407283;
+        recip_rom[49] = 32'd1802478078;
+        recip_rom[50] = 32'd1796587627;
+        recip_rom[51] = 32'd1790735550;
+        recip_rom[52] = 32'd1784921474;
+        recip_rom[53] = 32'd1779145029;
+        recip_rom[54] = 32'd1773405851;
+        recip_rom[55] = 32'd1767703582;
+        recip_rom[56] = 32'd1762037865;
+        recip_rom[57] = 32'd1756408351;
+        recip_rom[58] = 32'd1750814694;
+        recip_rom[59] = 32'd1745256552;
+        recip_rom[60] = 32'd1739733588;
+        recip_rom[61] = 32'd1734245470;
+        recip_rom[62] = 32'd1728791868;
+        recip_rom[63] = 32'd1723372457;
+        recip_rom[64] = 32'd1717986918;
+        recip_rom[65] = 32'd1712634934;
+        recip_rom[66] = 32'd1707316192;
+        recip_rom[67] = 32'd1702030384;
+        recip_rom[68] = 32'd1696777203;
+        recip_rom[69] = 32'd1691556350;
+        recip_rom[70] = 32'd1686367527;
+        recip_rom[71] = 32'd1681210440;
+        recip_rom[72] = 32'd1676084798;
+        recip_rom[73] = 32'd1670990316;
+        recip_rom[74] = 32'd1665926709;
+        recip_rom[75] = 32'd1660893698;
+        recip_rom[76] = 32'd1655891006;
+        recip_rom[77] = 32'd1650918360;
+        recip_rom[78] = 32'd1645975491;
+        recip_rom[79] = 32'd1641062131;
+        recip_rom[80] = 32'd1636178018;
+        recip_rom[81] = 32'd1631322890;
+        recip_rom[82] = 32'd1626496491;
+        recip_rom[83] = 32'd1621698566;
+        recip_rom[84] = 32'd1616928864;
+        recip_rom[85] = 32'd1612187138;
+        recip_rom[86] = 32'd1607473140;
+        recip_rom[87] = 32'd1602786629;
+        recip_rom[88] = 32'd1598127366;
+        recip_rom[89] = 32'd1593495113;
+        recip_rom[90] = 32'd1588889636;
+        recip_rom[91] = 32'd1584310703;
+        recip_rom[92] = 32'd1579758086;
+        recip_rom[93] = 32'd1575231558;
+        recip_rom[94] = 32'd1570730897;
+        recip_rom[95] = 32'd1566255880;
+        recip_rom[96] = 32'd1561806289;
+        recip_rom[97] = 32'd1557381909;
+        recip_rom[98] = 32'd1552982525;
+        recip_rom[99] = 32'd1548607926;
+        recip_rom[100] = 32'd1544257904;
+        recip_rom[101] = 32'd1539932252;
+        recip_rom[102] = 32'd1535630765;
+        recip_rom[103] = 32'd1531353242;
+        recip_rom[104] = 32'd1527099483;
+        recip_rom[105] = 32'd1522869291;
+        recip_rom[106] = 32'd1518662469;
+        recip_rom[107] = 32'd1514478826;
+        recip_rom[108] = 32'd1510318170;
+        recip_rom[109] = 32'd1506180312;
+        recip_rom[110] = 32'd1502065065;
+        recip_rom[111] = 32'd1497972245;
+        recip_rom[112] = 32'd1493901668;
+        recip_rom[113] = 32'd1489853154;
+        recip_rom[114] = 32'd1485826524;
+        recip_rom[115] = 32'd1481821601;
+        recip_rom[116] = 32'd1477838209;
+        recip_rom[117] = 32'd1473876177;
+        recip_rom[118] = 32'd1469935331;
+        recip_rom[119] = 32'd1466015504;
+        recip_rom[120] = 32'd1462116526;
+        recip_rom[121] = 32'd1458238233;
+        recip_rom[122] = 32'd1454380460;
+        recip_rom[123] = 32'd1450543045;
+        recip_rom[124] = 32'd1446725826;
+        recip_rom[125] = 32'd1442928645;
+        recip_rom[126] = 32'd1439151345;
+        recip_rom[127] = 32'd1435393770;
+        recip_rom[128] = 32'd1431655765;
+        recip_rom[129] = 32'd1427937179;
+        recip_rom[130] = 32'd1424237860;
+        recip_rom[131] = 32'd1420557659;
+        recip_rom[132] = 32'd1416896428;
+        recip_rom[133] = 32'd1413254020;
+        recip_rom[134] = 32'd1409630292;
+        recip_rom[135] = 32'd1406025099;
+        recip_rom[136] = 32'd1402438301;
+        recip_rom[137] = 32'd1398869755;
+        recip_rom[138] = 32'd1395319325;
+        recip_rom[139] = 32'd1391786871;
+        recip_rom[140] = 32'd1388272257;
+        recip_rom[141] = 32'd1384775350;
+        recip_rom[142] = 32'd1381296015;
+        recip_rom[143] = 32'd1377834120;
+        recip_rom[144] = 32'd1374389535;
+        recip_rom[145] = 32'd1370962129;
+        recip_rom[146] = 32'd1367551776;
+        recip_rom[147] = 32'd1364158347;
+        recip_rom[148] = 32'd1360781718;
+        recip_rom[149] = 32'd1357421763;
+        recip_rom[150] = 32'd1354078359;
+        recip_rom[151] = 32'd1350751385;
+        recip_rom[152] = 32'd1347440720;
+        recip_rom[153] = 32'd1344146244;
+        recip_rom[154] = 32'd1340867839;
+        recip_rom[155] = 32'd1337605387;
+        recip_rom[156] = 32'd1334358772;
+        recip_rom[157] = 32'd1331127879;
+        recip_rom[158] = 32'd1327912594;
+        recip_rom[159] = 32'd1324712805;
+        recip_rom[160] = 32'd1321528399;
+        recip_rom[161] = 32'd1318359266;
+        recip_rom[162] = 32'd1315205296;
+        recip_rom[163] = 32'd1312066382;
+        recip_rom[164] = 32'd1308942414;
+        recip_rom[165] = 32'd1305833287;
+        recip_rom[166] = 32'd1302738895;
+        recip_rom[167] = 32'd1299659134;
+        recip_rom[168] = 32'd1296593901;
+        recip_rom[169] = 32'd1293543092;
+        recip_rom[170] = 32'd1290506605;
+        recip_rom[171] = 32'd1287484342;
+        recip_rom[172] = 32'd1284476201;
+        recip_rom[173] = 32'd1281482084;
+        recip_rom[174] = 32'd1278501893;
+        recip_rom[175] = 32'd1275535531;
+        recip_rom[176] = 32'd1272582903;
+        recip_rom[177] = 32'd1269643912;
+        recip_rom[178] = 32'd1266718465;
+        recip_rom[179] = 32'd1263806469;
+        recip_rom[180] = 32'd1260907830;
+        recip_rom[181] = 32'd1258022457;
+        recip_rom[182] = 32'd1255150260;
+        recip_rom[183] = 32'd1252291148;
+        recip_rom[184] = 32'd1249445032;
+        recip_rom[185] = 32'd1246611823;
+        recip_rom[186] = 32'd1243791434;
+        recip_rom[187] = 32'd1240983779;
+        recip_rom[188] = 32'd1238188770;
+        recip_rom[189] = 32'd1235406323;
+        recip_rom[190] = 32'd1232636354;
+        recip_rom[191] = 32'd1229878778;
+        recip_rom[192] = 32'd1227133513;
+        recip_rom[193] = 32'd1224400476;
+        recip_rom[194] = 32'd1221679586;
+        recip_rom[195] = 32'd1218970763;
+        recip_rom[196] = 32'd1216273925;
+        recip_rom[197] = 32'd1213588993;
+        recip_rom[198] = 32'd1210915890;
+        recip_rom[199] = 32'd1208254536;
+        recip_rom[200] = 32'd1205604855;
+        recip_rom[201] = 32'd1202966770;
+        recip_rom[202] = 32'd1200340205;
+        recip_rom[203] = 32'd1197725085;
+        recip_rom[204] = 32'd1195121335;
+        recip_rom[205] = 32'd1192528880;
+        recip_rom[206] = 32'd1189947649;
+        recip_rom[207] = 32'd1187377568;
+        recip_rom[208] = 32'd1184818564;
+        recip_rom[209] = 32'd1182270568;
+        recip_rom[210] = 32'd1179733506;
+        recip_rom[211] = 32'd1177207310;
+        recip_rom[212] = 32'd1174691910;
+        recip_rom[213] = 32'd1172187236;
+        recip_rom[214] = 32'd1169693221;
+        recip_rom[215] = 32'd1167209796;
+        recip_rom[216] = 32'd1164736894;
+        recip_rom[217] = 32'd1162274448;
+        recip_rom[218] = 32'd1159822392;
+        recip_rom[219] = 32'd1157380661;
+        recip_rom[220] = 32'd1154949189;
+        recip_rom[221] = 32'd1152527912;
+        recip_rom[222] = 32'd1150116765;
+        recip_rom[223] = 32'd1147715687;
+        recip_rom[224] = 32'd1145324612;
+        recip_rom[225] = 32'd1142943480;
+        recip_rom[226] = 32'd1140572228;
+        recip_rom[227] = 32'd1138210795;
+        recip_rom[228] = 32'd1135859120;
+        recip_rom[229] = 32'd1133517142;
+        recip_rom[230] = 32'd1131184802;
+        recip_rom[231] = 32'd1128862041;
+        recip_rom[232] = 32'd1126548799;
+        recip_rom[233] = 32'd1124245018;
+        recip_rom[234] = 32'd1121950641;
+        recip_rom[235] = 32'd1119665609;
+        recip_rom[236] = 32'd1117389866;
+        recip_rom[237] = 32'd1115123355;
+        recip_rom[238] = 32'd1112866020;
+        recip_rom[239] = 32'd1110617806;
+        recip_rom[240] = 32'd1108378657;
+        recip_rom[241] = 32'd1106148519;
+        recip_rom[242] = 32'd1103927337;
+        recip_rom[243] = 32'd1101715058;
+        recip_rom[244] = 32'd1099511628;
+        recip_rom[245] = 32'd1097316994;
+        recip_rom[246] = 32'd1095131103;
+        recip_rom[247] = 32'd1092953904;
+        recip_rom[248] = 32'd1090785345;
+        recip_rom[249] = 32'd1088625374;
+        recip_rom[250] = 32'd1086473940;
+        recip_rom[251] = 32'd1084330994;
+        recip_rom[252] = 32'd1082196484;
+        recip_rom[253] = 32'd1080070361;
+        recip_rom[254] = 32'd1077952576;
+        recip_rom[255] = 32'd1075843080;
+    end
 
 //-------------------
 // Main State Machine
@@ -228,7 +516,8 @@ module mult(
 // MULUW   : A=M1, BH=LowerB, unsign MULT, C=PM,       MACL<=ADD > NOP
 
     always @(STATE or SLOT or MULCOM2 or MAC_S or div_counter)
-    begin 
+    begin
+        ZL <= 1'b0;
         case (STATE)
             `NOP    :begin
                       {SELA,SHIFT,SIGN,SIZE,ADD,LATMACH,LATMACL,ZH}<=9'b0_000_00_000;
@@ -321,7 +610,22 @@ module mult(
                       NEXTSTATE <= `NOP;
                      end
             `DIVOP  :begin
-                      {SELA,SHIFT,SIGN,SIZE,ADD,LATMACH,LATMACL,ZH}<=9'b0_000_00_000;
+                      // DSP multiply control based on div_counter
+                      case (div_counter)
+                          // Multiply step 1 (unsigned 31x16 lower half, fresh)
+                          6'd23, 6'd19, 6'd15, 6'd11, 6'd7, 6'd3: begin
+                              {SELA,SHIFT,SIGN,SIZE,ADD,LATMACH,LATMACL,ZH}<=9'b0_001_00_111;
+                              ZL <= 1'b1;
+                          end
+                          // Multiply step 2 (upper half, accumulate)
+                          6'd22, 6'd18, 6'd14, 6'd10, 6'd6, 6'd2: begin
+                              {SELA,SHIFT,SIGN,SIZE,ADD,LATMACH,LATMACL,ZH}<=9'b0_101_00_110;
+                          end
+                          // All other cycles: no multiply
+                          default: begin
+                              {SELA,SHIFT,SIGN,SIZE,ADD,LATMACH,LATMACL,ZH}<=9'b0_000_00_000;
+                          end
+                      endcase
                       if (div_counter == 6'd0) begin
                           MAC_BUSY <= 1'b0;
                           MAC_DISPATCH <= 1'b1;
@@ -354,6 +658,10 @@ module mult(
 	   begin
             M1 <= MACIN1;
         end
+        else if (div_load_m1)
+        begin
+            M1 <= div_m1_val;
+        end
     end
 
 //-------
@@ -365,6 +673,10 @@ module mult(
         if (SLOT & MULCOM2[7])
 	   begin
             M2 <= MACIN2;
+        end
+        else if (div_load_m2)
+        begin
+            M2 <= div_m2_val;
         end
     end
 
@@ -625,9 +937,10 @@ module mult(
 //     - /+        +/-        M /P  OK       
 // ===========================================
 
-    always @(C or MACH or MACL or ZH)
+    always @(C or MACH or MACL or ZH or ZL)
     begin
-        ADDRESULT <= C + {((ZH == 1'b0) ? MACH : 32'h00000000), MACL};
+        ADDRESULT <= C + {((ZH == 1'b0) ? MACH : 32'h00000000),
+                          ((ZL == 1'b0) ? MACL : 32'h00000000)};
     end
 
     reg [1:0] RESULT_REGION48; //00:P, 01:P', 10:M, 11:M'
@@ -764,116 +1077,238 @@ module mult(
     end
 
 //***************************
-// Division Unit (DIVU/DIVS)
+// Division Unit (DIVU/DIVS) - DSP Newton-Raphson
 //***************************
-// Non-restoring division algorithm, 32 cycles.
+// Uses existing DSP multiplier for Newton-Raphson reciprocal division.
+// Algorithm: LUT(8-bit) -> 2x NR iterations -> multiply -> verify+correct
 // DIVU (3nm1): unsigned Rn / Rm -> MACH=quotient, MACL=remainder
 // DIVS (3nm9): signed   Rn / Rm -> MACH=quotient, MACL=remainder
 //
 // div_counter usage:
-//   33    : setup (latch operands, handle special cases, abs for signed)
-//   32..1 : 32 iterations of non-restoring division
-//   0     : done, div_write asserts to update MACH/MACL
+//   25    : SETUP (CLZ, normalize, LUT, abs, special cases)
+//   24    : LOAD (M1=d_norm, M2=r0)
+//   23-22 : NR1 multiply (d_norm * r0)
+//   21    : NR1 error + LOAD (M1=r0, M2=eps)
+//   20    : LOAD settle
+//   19-18 : NR1 correction multiply (r0 * eps)
+//   17    : Store r1 + LOAD (M1=d_norm, M2=r1)
+//   16    : LOAD settle
+//   15-14 : NR2 multiply (d_norm * r1)
+//   13    : NR2 error + LOAD (M1=r1, M2=eps2)
+//   12    : LOAD settle
+//   11-10 : NR2 correction multiply (r1 * eps2)
+//    9    : Store r2 + LOAD (M1=dividend, M2=r2)
+//    8    : LOAD settle
+//    7-6  : Quotient multiply (dividend * r2)
+//    5    : Extract q + LOAD (M1=q, M2=divisor)
+//    4    : LOAD settle
+//    3-2  : Verify multiply (q * divisor)
+//    1    : Correction + sign -> counter=0
+//    0    : DONE, div_write asserts
 //
-// Special cases (RISC-V compatible):
-//   divisor==0           : quotient=0xFFFFFFFF, remainder=dividend
-//   signed MIN / -1      : quotient=0x80000000, remainder=0
+// Total: ~26 cycles (special cases: 2 cycles)
 
     assign div_write = (STATE == `DIVOP) & (div_counter == 6'd0);
 
-    // Division combinational signals (non-restoring step)
-    wire [32:0] div_shifted_rem = {div_remainder[31:0], div_quotient[31]};
-    wire [32:0] div_sub_result  = div_shifted_rem - {1'b0, div_divisor};
-    wire [32:0] div_add_result  = div_shifted_rem + {1'b0, div_divisor};
-    wire [32:0] div_new_rem     = div_remainder[32] ? div_add_result : div_sub_result;
-    wire        div_quot_bit    = ~div_new_rem[32]; // 1 if remainder >= 0
+    // Setup combinational wires (CLZ, normalize, LUT lookup)
+    wire [31:0] div_setup_abs_d = (div_signed_op && M2[31]) ? (~M2 + 32'd1) : M2;
+    wire [4:0]  div_setup_clz   = clz32(div_setup_abs_d);
+    wire [31:0] div_setup_norm  = div_setup_abs_d << div_setup_clz;
+    wire [31:0] div_setup_recip = recip_rom[div_setup_norm[30:23]];
 
-    // Final correction: if remainder negative after last iteration, add divisor
-    wire [32:0] div_corrected_rem = div_new_rem[32] ? (div_new_rem + {1'b0, div_divisor})
-                                                    : div_new_rem;
+    // NR correction extraction: (r * eps) >> 30 from MACH:MACL
+    wire [31:0] div_nr_new_r = {MACH[29:0], MACL[31:30]};
 
-    // Division data path (counter, flags, and computation in one block)
+    // Quotient correction combinational logic (for counter=1)
+    wire [31:0] div_raw_rem_w = div_dividend - MACL;
+    wire        div_q_ovf_w   = (MACH != 32'd0) || (MACL > div_dividend);
+    wire        div_q_unf_w   = !div_q_ovf_w && (div_raw_rem_w >= div_original_d);
+    wire [31:0] div_adj_q_w   = div_q_ovf_w ? (div_quotient - 32'd1) :
+                                 div_q_unf_w ? (div_quotient + 32'd1) :
+                                 div_quotient;
+    wire [31:0] div_adj_r_w   = div_q_ovf_w ? (div_raw_rem_w + div_original_d) :
+                                 div_q_unf_w ? (div_raw_rem_w - div_original_d) :
+                                 div_raw_rem_w;
+
+    // Division data path
     always @(posedge CLK or posedge RST)
     begin
         if (RST) begin
-            div_counter   <= 6'd0;
-            div_signed_op <= 1'b0;
-            div_remainder <= 33'd0;
-            div_quotient  <= 32'd0;
-            div_divisor   <= 32'd0;
-            div_neg_q     <= 1'b0;
-            div_neg_r     <= 1'b0;
+            div_counter    <= 6'd0;
+            div_signed_op  <= 1'b0;
+            div_remainder  <= 33'd0;
+            div_quotient   <= 32'd0;
+            div_neg_q      <= 1'b0;
+            div_neg_r      <= 1'b0;
+            div_d_norm     <= 32'd0;
+            div_recip      <= 32'd0;
+            div_dividend   <= 32'd0;
+            div_original_d <= 32'd0;
+            div_shift      <= 5'd0;
+            div_load_m1    <= 1'b0;
+            div_load_m2    <= 1'b0;
+            div_m1_val     <= 32'd0;
+            div_m2_val     <= 32'd0;
         end else if (MAC_DISPATCH & SLOT) begin
             case (MULCOM2)
-                8'hB1: begin
-                    div_counter   <= 6'd33;
-                    div_signed_op <= 1'b0;
-                    div_remainder <= 33'd0;
-                    div_neg_q     <= 1'b0;
-                    div_neg_r     <= 1'b0;
+                8'hB1: begin  // DIVU
+                    div_counter    <= 6'd25;
+                    div_signed_op  <= 1'b0;
+                    div_neg_q      <= 1'b0;
+                    div_neg_r      <= 1'b0;
+                    div_load_m1    <= 1'b0;
+                    div_load_m2    <= 1'b0;
                 end
-                8'hB9: begin
-                    div_counter   <= 6'd33;
-                    div_signed_op <= 1'b1;
-                    div_remainder <= 33'd0;
-                    div_neg_q     <= 1'b0;
-                    div_neg_r     <= 1'b0;
+                8'hB9: begin  // DIVS
+                    div_counter    <= 6'd25;
+                    div_signed_op  <= 1'b1;
+                    div_neg_q      <= 1'b0;
+                    div_neg_r      <= 1'b0;
+                    div_load_m1    <= 1'b0;
+                    div_load_m2    <= 1'b0;
                 end
                 default: ;
             endcase
         end else if (STATE == `DIVOP) begin
-            if (div_counter == 6'd33) begin
+            div_load_m1 <= 1'b0;  // default: clear load signals
+            div_load_m2 <= 1'b0;
+
+            case (div_counter)
                 //---------------------------
-                // Setup: latch and special cases
+                // SETUP (counter=25)
                 //---------------------------
-                if (M2 == 32'd0) begin
-                    // Zero division: quot=all-1s, rem=dividend
-                    div_quotient  <= 32'hFFFFFFFF;
-                    div_remainder <= {1'b0, M1};
-                    div_counter   <= 6'd0; // skip to done
-                end else if (div_signed_op && M1 == 32'h80000000 && M2 == 32'hFFFFFFFF) begin
-                    // Signed overflow: MIN / -1
-                    div_quotient  <= 32'h80000000;
-                    div_remainder <= 33'd0;
-                    div_counter   <= 6'd0; // skip to done
-                end else if (div_signed_op) begin
-                    // Signed normal: take absolute values
-                    div_neg_q    <= M1[31] ^ M2[31];
-                    div_neg_r    <= M1[31];
-                    div_quotient <= M1[31] ? (~M1 + 32'd1) : M1;
-                    div_divisor  <= M2[31] ? (~M2 + 32'd1) : M2;
-                    div_remainder <= 33'd0;
-                    div_counter   <= 6'd32;
-                end else begin
-                    // Unsigned normal
-                    div_quotient  <= M1;
-                    div_divisor   <= M2;
-                    div_remainder <= 33'd0;
-                    div_counter   <= 6'd32;
+                6'd25: begin
+                    if (M2 == 32'd0) begin
+                        // Zero division: q=all-1s, r=dividend
+                        div_quotient  <= 32'hFFFFFFFF;
+                        div_remainder <= {1'b0, M1};
+                        div_counter   <= 6'd0;
+                    end else if (div_signed_op && M1 == 32'h80000000 && M2 == 32'hFFFFFFFF) begin
+                        // Signed overflow: MIN / -1
+                        div_quotient  <= 32'h80000000;
+                        div_remainder <= 33'd0;
+                        div_counter   <= 6'd0;
+                    end else begin
+                        // Normal case: setup operands and NR initial estimate
+                        if (div_signed_op) begin
+                            div_neg_q      <= M1[31] ^ M2[31];
+                            div_neg_r      <= M1[31];
+                            div_dividend   <= M1[31] ? (~M1 + 32'd1) : M1;
+                            div_original_d <= M2[31] ? (~M2 + 32'd1) : M2;
+                        end else begin
+                            div_dividend   <= M1;
+                            div_original_d <= M2;
+                        end
+                        div_shift  <= div_setup_clz;
+                        div_d_norm <= div_setup_norm;
+                        div_recip  <= div_setup_recip;
+                        // Load M1=d_norm, M2=r0 for NR1 multiply
+                        div_load_m1 <= 1'b1;
+                        div_load_m2 <= 1'b1;
+                        div_m1_val  <= div_setup_norm;
+                        div_m2_val  <= div_setup_recip;
+                        div_counter <= 6'd24;
+                    end
                 end
-            end else if (div_counter > 6'd1) begin
-                //---------------------------
-                // Iteration: non-restoring division step
-                //---------------------------
-                div_remainder <= div_new_rem;
-                div_quotient  <= {div_quotient[30:0], div_quot_bit};
-                div_counter   <= div_counter - 6'd1;
-            end else if (div_counter == 6'd1) begin
-                //---------------------------
-                // Last iteration + final correction + sign
-                //---------------------------
-                if (div_neg_q)
-                    div_quotient <= ~{div_quotient[30:0], div_quot_bit} + 32'd1;
-                else
-                    div_quotient <= {div_quotient[30:0], div_quot_bit};
 
-                if (div_neg_r)
-                    div_remainder <= ~{1'b0, div_corrected_rem[31:0]} + 33'd1;
-                else
-                    div_remainder <= {1'b0, div_corrected_rem[31:0]};
+                //---------------------------
+                // NR1: error compute (counter=21)
+                // MACH = (d_norm * r0) >> 32
+                // eps = 0x80000000 - MACH  (= (2 - d*r) in Q2.30)
+                // Load M1=r0, M2=eps for correction multiply
+                //---------------------------
+                6'd21: begin
+                    div_load_m1 <= 1'b1;
+                    div_load_m2 <= 1'b1;
+                    div_m1_val  <= div_recip;
+                    div_m2_val  <= 32'h80000000 - MACH;
+                    div_counter <= div_counter - 6'd1;
+                end
 
-                div_counter <= 6'd0;
-            end
+                //---------------------------
+                // NR1: store r1 (counter=17)
+                // MACH:MACL = r0 * eps
+                // r1 = (r0 * eps) >> 30 = {MACH[29:0], MACL[31:30]}
+                // Load M1=d_norm, M2=r1 for NR2 multiply
+                //---------------------------
+                6'd17: begin
+                    div_recip   <= div_nr_new_r;
+                    div_load_m1 <= 1'b1;
+                    div_load_m2 <= 1'b1;
+                    div_m1_val  <= div_d_norm;
+                    div_m2_val  <= div_nr_new_r;
+                    div_counter <= div_counter - 6'd1;
+                end
+
+                //---------------------------
+                // NR2: error compute (counter=13)
+                // MACH = (d_norm * r1) >> 32
+                // eps2 = 0x80000000 - MACH
+                // Load M1=r1, M2=eps2
+                //---------------------------
+                6'd13: begin
+                    div_load_m1 <= 1'b1;
+                    div_load_m2 <= 1'b1;
+                    div_m1_val  <= div_recip;
+                    div_m2_val  <= 32'h80000000 - MACH;
+                    div_counter <= div_counter - 6'd1;
+                end
+
+                //---------------------------
+                // NR2: store r2 (counter=9)
+                // r2 = (r1 * eps2) >> 30
+                // Load M1=dividend, M2=r2
+                //---------------------------
+                6'd9: begin
+                    div_recip   <= div_nr_new_r;
+                    div_load_m1 <= 1'b1;
+                    div_load_m2 <= 1'b1;
+                    div_m1_val  <= div_dividend;
+                    div_m2_val  <= div_nr_new_r;
+                    div_counter <= div_counter - 6'd1;
+                end
+
+                //---------------------------
+                // Quotient extract (counter=5)
+                // MACH:MACL = dividend * r2
+                // q = product >> (62 - shift)
+                // Load M1=q, M2=divisor for verification
+                //---------------------------
+                6'd5: begin
+                    if (div_shift == 5'd31)
+                        div_quotient <= {MACH[30:0], MACL[31]};
+                    else
+                        div_quotient <= MACH >> (5'd30 - div_shift);
+                    // Load for verify multiply
+                    div_load_m1 <= 1'b1;
+                    div_load_m2 <= 1'b1;
+                    if (div_shift == 5'd31)
+                        div_m1_val <= {MACH[30:0], MACL[31]};
+                    else
+                        div_m1_val <= MACH >> (5'd30 - div_shift);
+                    div_m2_val  <= div_original_d;
+                    div_counter <= div_counter - 6'd1;
+                end
+
+                //---------------------------
+                // Correction + sign (counter=1)
+                // MACH:MACL = q * divisor
+                // Adjust q by ±1 if needed, compute remainder
+                //---------------------------
+                6'd1: begin
+                    div_quotient  <= div_neg_q ? (~div_adj_q_w + 32'd1) : div_adj_q_w;
+                    div_remainder <= div_neg_r ? {1'b0, ~div_adj_r_w + 32'd1} : {1'b0, div_adj_r_w};
+                    div_counter   <= 6'd0;
+                end
+
+                //---------------------------
+                // Default: decrement counter (LOAD, multiply steps, etc.)
+                //---------------------------
+                default: begin
+                    if (div_counter != 6'd0)
+                        div_counter <= div_counter - 6'd1;
+                end
+            endcase
         end
     end
 
