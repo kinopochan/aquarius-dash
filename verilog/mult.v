@@ -123,20 +123,11 @@ module mult(
     reg  SELA;        // 0:A=M1, 1:A=MB
     reg  [31:0] A;    // A=M1 or A=MB (selected by SELA)
     reg  [31:0] B;    // B=M2
-    reg  SHIFT;       // use lower(0)/upper(1) 16bit of B; use unshifted(0)/16bit-shifted(1) PM
+    reg  SHIFT;       // (kept for 9-bit control word compatibility; unused after 32x32 rewrite)
     reg  SIGN;        // 0:unsigned, 1:signed (multipier operation)
     reg  SIZE;        // if 32*32 then 1, 16*16 then 0
-    reg  [30:0] AH;   // lower 31bit of A
-    reg  [15:0] BH;   // upper 16bit of B(0) or lower 16bit of B(1)
-    reg  [46:0] ABH;  // output of Multiplier(31x16) (=A * BH) (calculated as unsigned)
-    reg  [32:0] ABH2; // modified ABH
-    reg  [31:0] P2;   // if signed32*32, ~SHIFT&A[31]&B[31:0], if signed16*16, ~SHIFT&A[31]&{B[15:0]:16'h0000}
-    reg  [31:0] P3;   // if signed32*32, ~SHIFT&B[31]&A[31:0], if signed16*16, ~SHIFT&B[15]&A[31:0]
-    reg  [31:0] P23;  // P2 + P3
-    reg  [32:0] P23S; // if SIGN, ~P23, else P23
-    reg  [47:0] PM;   // multiplier output (partial result) with sign
     reg  [63:0] C;    // one of the adder inputs
-    reg  ZH;          // if final result is 16bit, adder input from MACH is forced to zero 
+    reg  ZH;          // if final result is 16bit, adder input from MACH is forced to zero
     reg  [1:0] ADD;   // 00:ADD, 10:ADDS48, 11:ADDS32 (adder functions regarding saturation)
     reg  [63:0] ADDRESULT;  // pure adder result
     reg  [63:0] ADDRESULT2; // saturated result
@@ -170,7 +161,6 @@ module mult(
     reg         div_load_m2;   // load M2 from division logic
     reg  [31:0] div_m1_val;    // value to load into M1
     reg  [31:0] div_m2_val;    // value to load into M2
-    reg         ZL;            // zero MACL input to adder (for chained multiplies)
 
     // Reciprocal LUT ROM - 256 entries indexed by d_norm[30:23]
     // LUT[i] = round(2^39 / (256 + i)), gives 1/d in Q2.30
@@ -487,37 +477,25 @@ module mult(
     end
 
 //------------------
-// State Transistion
+// State Transistion (32x32 single-cycle multiplier)
 //------------------
-// NOP     : A=M1, BH=LowerB, unsign MULT, C=PM,                > NOP
+// Each multiply/MAC instruction now completes in 1 cycle.
+// The 2-cycle states (DMULSL2, DMULUL2, MACL2, MACLS2, MULL2) are kept in
+// defines.v for backward compatibility but are unused here.
 //
-// DMULSL  : A=M1, BH=LowerB, signed MULT, C=PM,       MAC<=ADD > DMULSL2
-// DMULSL2 : A=M1, BH=upperB, signed MULT, C=(PM<<16), MAC<=ADD > NOP
-//
-// DMULUL  : A=M1, BH=LowerB, unsign MULT, C=PM,       MAC<=ADD > DMULUL2
-// DMULUL2 : A=M1, BH=upperB, unsign MULT, C=(PM<<16), MAC<=ADD > NOP
-//
-// MACL0   : A=MB, BH=LowerB, signed MULT, C=PM,       MAC<=ADD > MACL2
-// MACL2   : A=MB, BH=upperB, signed MULT, C=(PM<<16), MAC<=ADD > NOP
-
-// MACLS   : A=MB, BH=LowerB, signed MULT, C=PM,       MAC<=ADDS48 > MACL2
-// MACLS2  : A=MB, BH=upperB, signed MULT, C=(PM<<16), MAC<=ADDS48 > NOP
-
-// MACW    : A=M1, BH=LowerB, signed MULT, C=PM,       MAC<=ADD > NOP
-
-// MACWS   : A=M1, BH=LowerB, signed MULT, C=PM,       MACL<=ADDS32 > NOP
-//                                                               if saturate, MACH|=0001
-
-// MULL    : A=M1, BH=LowerB, signed MULT, C=PM,       MACL<=ADD > MULL2
-// MULL2   : A=M1, BH=upperB, signed MULT, C=(PM<<16), MACL<=ADD > NOP
-
-// MULSW   : A=M1, BH=LowerB, signed MULT, C=PM,       MACL<=ADD > NOP
-
-// MULUW   : A=M1, BH=LowerB, unsign MULT, C=PM,       MACL<=ADD > NOP
+// NOP     : idle.
+// DMULSL  : signed 32x32 -> MACH:MACL (was 2 cycles)
+// DMULUL  : unsigned 32x32 -> MACH:MACL (was 2 cycles)
+// MACL0   : A=MB, signed 32x32 add to MACH:MACL (was 2 cycles)
+// MACLS   : same with ADDS48 saturation
+// MACW    : A=M1, signed 16x16 add to MACH:MACL
+// MACWS   : signed 16x16 add with ADDS32 saturation
+// MULL    : signed 32x32 lower 32bit -> MACL (was 2 cycles)
+// MULSW   : signed 16x16 -> MACL
+// MULUW   : unsigned 16x16 -> MACL
 
     always @(STATE or SLOT or MULCOM2 or MAC_S or div_counter)
     begin
-        ZL <= 1'b0;
         case (STATE)
             `NOP    :begin
                       {SELA,SHIFT,SIGN,SIZE,ADD,LATMACH,LATMACL,ZH}<=9'b0_000_00_000;
@@ -526,106 +504,72 @@ module mult(
                       NEXTSTATE <= `NOP;
                      end
             `DMULSL :begin
+                      // signed 32x32, latch both MACH and MACL
                       {SELA,SHIFT,SIGN,SIZE,ADD,LATMACH,LATMACL,ZH}<=9'b0_011_00_110;
-                      MAC_BUSY <= 1'b1;
-                      MAC_DISPATCH <= 1'b0;
-                      NEXTSTATE <= `DMULSL2;
-                     end
-            `DMULSL2:begin
-                      {SELA,SHIFT,SIGN,SIZE,ADD,LATMACH,LATMACL,ZH}<=9'b0_111_00_110;
                       MAC_BUSY <= 1'b0;
                       MAC_DISPATCH <= 1'b1;
                       NEXTSTATE <= `NOP;
                      end
             `DMULUL :begin
+                      // unsigned 32x32, latch both MACH and MACL
                       {SELA,SHIFT,SIGN,SIZE,ADD,LATMACH,LATMACL,ZH}<=9'b0_001_00_110;
-                      MAC_BUSY <= 1'b1;
-                      MAC_DISPATCH <= 1'b0;
-                      NEXTSTATE <= `DMULUL2;
-                     end
-            `DMULUL2:begin
-                      {SELA,SHIFT,SIGN,SIZE,ADD,LATMACH,LATMACL,ZH}<=9'b0_101_00_110;
-                      MAC_BUSY <= 1'b0;    
+                      MAC_BUSY <= 1'b0;
                       MAC_DISPATCH <= 1'b1;
                       NEXTSTATE <= `NOP;
                      end
             `MACL0  :begin
+                      // signed 32x32 accumulate (A=MB), ADD=00
                       {SELA,SHIFT,SIGN,SIZE,ADD,LATMACH,LATMACL,ZH}<=9'b1_011_00_110;
-                      MAC_BUSY <= 1'b1;     
-                      MAC_DISPATCH <= 1'b0;
-                      NEXTSTATE <= `MACL2;
-                     end
-            `MACL2  :begin
-                      {SELA,SHIFT,SIGN,SIZE,ADD,LATMACH,LATMACL,ZH}<=9'b1_111_00_110;
-                      MAC_BUSY <= 1'b0;    
+                      MAC_BUSY <= 1'b0;
                       MAC_DISPATCH <= 1'b1;
                       NEXTSTATE <= `NOP;
                      end
             `MACLS  :begin
+                      // signed 32x32 accumulate with ADDS48 saturation
                       {SELA,SHIFT,SIGN,SIZE,ADD,LATMACH,LATMACL,ZH}<=9'b1_011_10_110;
-                      MAC_BUSY <= 1'b1;     
-                      MAC_DISPATCH <= 1'b0;
-                      NEXTSTATE <= `MACLS2;
-                     end
-            `MACLS2 :begin
-                      {SELA,SHIFT,SIGN,SIZE,ADD,LATMACH,LATMACL,ZH}<=9'b1_111_10_110;
-                      MAC_BUSY <= 1'b0;    
+                      MAC_BUSY <= 1'b0;
                       MAC_DISPATCH <= 1'b1;
                       NEXTSTATE <= `NOP;
                      end
             `MACW   :begin
                       {SELA,SHIFT,SIGN,SIZE,ADD,LATMACH,LATMACL,ZH}<=9'b0_010_00_110;
-                      MAC_BUSY <= 1'b1;    
+                      MAC_BUSY <= 1'b0;
                       MAC_DISPATCH <= 1'b1;
                       NEXTSTATE <= `NOP;
                      end
             `MACWS  :begin
                       {SELA,SHIFT,SIGN,SIZE,ADD,LATMACH,LATMACL,ZH}<=9'b0_010_11_011;
-                      MAC_BUSY <= 1'b0;     
+                      MAC_BUSY <= 1'b0;
                       MAC_DISPATCH <= 1'b1;
                       NEXTSTATE <= `NOP;
                      end
             `MULL   :begin
+                      // signed 32x32, write lower 32bit to MACL (ZH=1 masks MACH)
                       {SELA,SHIFT,SIGN,SIZE,ADD,LATMACH,LATMACL,ZH}<=9'b0_011_00_011;
-                      MAC_BUSY <= 1'b1;     
-                      MAC_DISPATCH <= 1'b0;
-                      NEXTSTATE <= `MULL2;
-                     end
-            `MULL2  :begin
-                      {SELA,SHIFT,SIGN,SIZE,ADD,LATMACH,LATMACL,ZH}<=9'b0_111_00_011;
-                      MAC_BUSY <= 1'b0;    
+                      MAC_BUSY <= 1'b0;
                       MAC_DISPATCH <= 1'b1;
                       NEXTSTATE <= `NOP;
                      end
             `MULSW  :begin
                       {SELA,SHIFT,SIGN,SIZE,ADD,LATMACH,LATMACL,ZH}<=9'b0_010_00_011;
-                      MAC_BUSY <= 1'b0;     
+                      MAC_BUSY <= 1'b0;
                       MAC_DISPATCH <= 1'b1;
                       NEXTSTATE <= `NOP;
                      end
             `MULUW  :begin
                       {SELA,SHIFT,SIGN,SIZE,ADD,LATMACH,LATMACL,ZH}<=9'b0_000_00_011;
-                      MAC_BUSY <= 1'b0;     
+                      MAC_BUSY <= 1'b0;
                       MAC_DISPATCH <= 1'b1;
                       NEXTSTATE <= `NOP;
                      end
             `DIVOP  :begin
-                      // DSP multiply control based on div_counter
-                      case (div_counter)
-                          // Multiply step 1 (unsigned 31x16 lower half, fresh)
-                          6'd23, 6'd19, 6'd15, 6'd11, 6'd7, 6'd3: begin
-                              {SELA,SHIFT,SIGN,SIZE,ADD,LATMACH,LATMACL,ZH}<=9'b0_001_00_111;
-                              ZL <= 1'b1;
-                          end
-                          // Multiply step 2 (upper half, accumulate)
-                          6'd22, 6'd18, 6'd14, 6'd10, 6'd6, 6'd2: begin
-                              {SELA,SHIFT,SIGN,SIZE,ADD,LATMACH,LATMACL,ZH}<=9'b0_101_00_110;
-                          end
-                          // All other cycles: no multiply
-                          default: begin
-                              {SELA,SHIFT,SIGN,SIZE,ADD,LATMACH,LATMACL,ZH}<=9'b0_000_00_000;
-                          end
-                      endcase
+                      // Division does not touch MACH/MACL via the adder path.
+                      // div_write directly writes quotient/remainder at counter=0.
+                      // SELA=0, SIZE=1, SIGN=0 (dividend/divisor are already
+                      // converted to absolute values during SETUP).
+                      // {SELA, SHIFT, SIGN, SIZE, ADD[1:0], LATMACH, LATMACL, ZH}
+                      //  0     0      0     1     00        0        0        0
+                      {SELA,SHIFT,SIGN,SIZE,ADD,LATMACH,LATMACL,ZH}<=9'b0_001_00_000;
                       if (div_counter == 6'd0) begin
                           MAC_BUSY <= 1'b0;
                           MAC_DISPATCH <= 1'b1;
@@ -705,101 +649,42 @@ module mult(
             A <= M1;
     end
 
-//---------------------------------------
-// lower 31bit of A	(input to Multiplier)
-//---------------------------------------
-    always @(A or SIZE)
-    begin
-	   if (SIZE == 1'b0)
-	       AH <= {16'h0000,A[14:0]};
-	   else
-	       AH <= A[30:0];
-    end
-
-//---------------------------------------
-// upper/lower of B (input to Multiplier)
-//---------------------------------------
-    always @(B or SHIFT or SIZE)
-    begin
-        if (SIZE == 1'b0)
-		  BH <= {1'b0,B[14:0]};
-        else if (SHIFT == 1'b0)
-            BH <= B[15:0];
-        else
-            BH <= {1'b0,B[30:16]};
-    end
-
 //-----------
-// Multiplier
-//----------
-    always @(AH or BH)
-    begin
-        ABH[46:0] <= AH[30:0] * BH[15:0]; // 31bit * 16bit -> 47bit
-    end
-
-//---
-// PM
-//---
-    always @(SHIFT or SIZE or A or B)
-    begin
-        if (SHIFT)
-	       begin
-			 P2 <= {1'b0, (A[31])? B[30:0]:31'h00000000};
-			 P3 <= {1'b0, (B[31])? A[30:0]:31'h00000000};
-		  end
-	   else if(~SIZE)
-	       begin
-			 P2 <= {17'h00000, (A[15])? B[14:0]:15'h0000};
-			 P3 <= {17'h00000, (B[15])? A[14:0]:15'h0000};
-		  end
-	   else
-	       begin
-			 P2 <= 32'h00000000;
-			 P3 <= 32'h00000000;
-		  end
-    end
-
-    always @(P2 or P3)
-    begin
-        P23 <= P2 + P3;
-    end
-
-    always @(ABH or SHIFT or SIZE or A or B)
-    begin
-        if (SIZE == 1'b0)
-	       ABH2 <= {17'h00000,(A[15] & B[15]),ABH[29:15]};
-        else if (SHIFT == 1'b0)
-            ABH2 <= {1'b0, ABH[46:15]};
-	   else
-	       ABH2 <= {1'b0,(A[31] & B[31]),ABH[45:15]};
-    end
-
-    always @(P23 or SIGN)
-    begin
-        if (SIGN == 1'b0)
-	       P23S <= {1'b0, P23};
-	   else
-	       P23S <= {1'b1,~P23};
-    end
-
-    always @(P23S or ABH or ABH2 or SIGN)
-    begin
-	   PM[47:15] <= ABH2[32:0] + P23S + SIGN;
-	   PM[14: 0] <= ABH[14: 0];
-    end
+// 32x32 Multiplier (unified, case B-1)
+//-----------
+// Combinational 32x32 signed/unsigned multiply producing 64-bit result.
+// Handles all SIZE/SIGN combinations:
+//   SIZE=0, SIGN=0: unsigned 16x16 -> result in lower 32 bits
+//   SIZE=0, SIGN=1: signed   16x16 -> result in lower 32 bits (sign-extended to 64)
+//   SIZE=1, SIGN=0: unsigned 32x32 -> result in full 64 bits
+//   SIZE=1, SIGN=1: signed   32x32 -> result in full 64 bits
+//
+// Quartus infers a DSP-based 33x33 signed multiplier (Cyclone V: 2 DSP blocks).
+    wire [31:0] mul_a_pre = SIZE ? A :
+                            (SIGN ? {{16{A[15]}}, A[15:0]} : {16'd0, A[15:0]});
+    wire [31:0] mul_b_pre = SIZE ? B :
+                            (SIGN ? {{16{B[15]}}, B[15:0]} : {16'd0, B[15:0]});
+    wire signed [32:0] mul_a_ext = SIGN ? {mul_a_pre[31], mul_a_pre}
+                                        : {1'b0,         mul_a_pre};
+    wire signed [32:0] mul_b_ext = SIGN ? {mul_b_pre[31], mul_b_pre}
+                                        : {1'b0,         mul_b_pre};
+    wire signed [65:0] MULT_RAW  = mul_a_ext * mul_b_ext;
+    wire        [63:0] MULT_RESULT = MULT_RAW[63:0];
 
 //---------
 // Select C
 //---------
-    always @(PM or SHIFT or SIZE)
+// For 16x16 signed, lower 32 bits of the product is the 16x16 result;
+// sign-extend to 64 bits so the 48-bit saturation adder sees the right value.
+// For 32x32 (signed or unsigned), use the full 64-bit product.
+    always @(MULT_RESULT or SIZE or SIGN)
     begin
-        if (SHIFT == 1'b0)
-            if (~SIZE & PM[47])
-                C <= {16'hffff, PM};
-            else 
-                C <= {16'h0000, PM};
+        if (SIZE == 1'b0 && SIGN == 1'b1)
+            C <= {{32{MULT_RESULT[31]}}, MULT_RESULT[31:0]};
+        else if (SIZE == 1'b0)
+            C <= {32'h00000000, MULT_RESULT[31:0]};
         else
-            C <= {PM, 16'h0000};
+            C <= MULT_RESULT;
     end
 
 //-------------------------------------
@@ -937,10 +822,9 @@ module mult(
 //     - /+        +/-        M /P  OK       
 // ===========================================
 
-    always @(C or MACH or MACL or ZH or ZL)
+    always @(C or MACH or MACL or ZH)
     begin
-        ADDRESULT <= C + {((ZH == 1'b0) ? MACH : 32'h00000000),
-                          ((ZL == 1'b0) ? MACL : 32'h00000000)};
+        ADDRESULT <= C + {((ZH == 1'b0) ? MACH : 32'h00000000), MACL};
     end
 
     reg [1:0] RESULT_REGION48; //00:P, 01:P', 10:M, 11:M'
@@ -1077,36 +961,39 @@ module mult(
     end
 
 //***************************
-// Division Unit (DIVU/DIVS) - DSP Newton-Raphson
+// Division Unit (DIVU/DIVS) - DSP Newton-Raphson (B-1 revision)
 //***************************
-// Uses existing DSP multiplier for Newton-Raphson reciprocal division.
-// Algorithm: LUT(8-bit) -> 2x NR iterations -> multiply -> verify+correct
-// DIVU (3nm1): unsigned Rn / Rm -> MACH=quotient, MACL=remainder
-// DIVS (3nm9): signed   Rn / Rm -> MACH=quotient, MACL=remainder
+// With the new combinational 32x32 multiplier, MULT_RESULT tracks
+// M1*M2 in a single cycle. Each NR step now takes exactly 1 cycle
+// (the previous LOAD-settle cycles are no longer needed).
+//
+// Because M1/M2 get updated at the NBA region after div_load is asserted,
+// the combinational MULT_RESULT = M1*M2 does not reflect the new operands
+// until the cycle AFTER the load request. Each multiply therefore spans
+// two DIVOP cycles: one LOAD cycle (sets div_load_m*) and one USE cycle
+// (reads MULT_RESULT and issues the next load).
 //
 // div_counter usage:
-//   25    : SETUP (CLZ, normalize, LUT, abs, special cases)
-//   24    : LOAD (M1=d_norm, M2=r0)
-//   23-22 : NR1 multiply (d_norm * r0)
-//   21    : NR1 error + LOAD (M1=r0, M2=eps)
-//   20    : LOAD settle
-//   19-18 : NR1 correction multiply (r0 * eps)
-//   17    : Store r1 + LOAD (M1=d_norm, M2=r1)
-//   16    : LOAD settle
-//   15-14 : NR2 multiply (d_norm * r1)
-//   13    : NR2 error + LOAD (M1=r1, M2=eps2)
-//   12    : LOAD settle
-//   11-10 : NR2 correction multiply (r1 * eps2)
-//    9    : Store r2 + LOAD (M1=dividend, M2=r2)
-//    8    : LOAD settle
-//    7-6  : Quotient multiply (dividend * r2)
-//    5    : Extract q + LOAD (M1=q, M2=divisor)
-//    4    : LOAD settle
-//    3-2  : Verify multiply (q * divisor)
-//    1    : Correction + sign -> counter=0
-//    0    : DONE, div_write asserts
+//   14 : SETUP (CLZ, normalize, LUT, abs-value, special cases)
+//        Loads M1=d_norm, M2=r0 for the first multiply.
+//   13 : settle (M1/M2 updating to d_norm / r0)
+//   12 : MUL1 use (MULT_RESULT=d*r). eps = 0x80000000 - upper32.
+//        Load M1=r0, M2=eps for MUL2.
+//   11 : settle
+//   10 : MUL2 use (MULT_RESULT=r*eps). r1 = upper >>30. Load d_norm/r1.
+//    9 : settle
+//    8 : MUL3 use (MULT_RESULT=d*r1). eps2. Load r1/eps2.
+//    7 : settle
+//    6 : MUL4 use (MULT_RESULT=r*eps2). r2. Load dividend/r2.
+//    5 : settle
+//    4 : MUL5 use (MULT_RESULT=dividend*r2). Extract q. Load q/divisor.
+//    3 : settle
+//    2 : MUL6 use (MULT_RESULT=q*divisor). Correction and sign.
+//    1 : (skip via default decrement)
+//    0 : DONE, div_write asserts, quotient/remainder written to MACH/MACL.
 //
-// Total: ~26 cycles (special cases: 2 cycles)
+// Total busy cycles: 14 (counter 14..0).
+// Special cases (zero div / signed overflow) complete in 2 busy cycles.
 
     assign div_write = (STATE == `DIVOP) & (div_counter == 6'd0);
 
@@ -1116,12 +1003,24 @@ module mult(
     wire [31:0] div_setup_norm  = div_setup_abs_d << div_setup_clz;
     wire [31:0] div_setup_recip = recip_rom[div_setup_norm[30:23]];
 
-    // NR correction extraction: (r * eps) >> 30 from MACH:MACL
-    wire [31:0] div_nr_new_r = {MACH[29:0], MACL[31:30]};
+    // Current multiply result (combinational MULT_RESULT on M1, M2).
+    wire [31:0] div_mul_hi = MULT_RESULT[63:32];
+    wire [31:0] div_mul_lo = MULT_RESULT[31:0];
 
-    // Quotient correction combinational logic (for counter=1)
-    wire [31:0] div_raw_rem_w = div_dividend - MACL;
-    wire        div_q_ovf_w   = (MACH != 32'd0) || (MACL > div_dividend);
+    // NR reciprocal extraction: (r * eps) >> 30 from MULT_RESULT
+    wire [31:0] div_nr_new_r = MULT_RESULT[61:30];
+
+    // Quotient extraction from dividend*r2 result.
+    //   q = MULT_RESULT >> (62 - shift)
+    // For shift in [0,30]: MULT_RESULT[63:32] >> (30 - shift)
+    // For shift == 31   : MULT_RESULT[62:31]    (one extra bit from low half)
+    wire [31:0] div_q_from_mul = (div_shift == 5'd31) ? MULT_RESULT[62:31]
+                                                      : (div_mul_hi >> (5'd30 - div_shift));
+
+    // Quotient correction combinational logic (for counter=6)
+    // MULT_RESULT = q * divisor (unsigned).
+    wire [31:0] div_raw_rem_w = div_dividend - div_mul_lo;
+    wire        div_q_ovf_w   = (div_mul_hi != 32'd0) || (div_mul_lo > div_dividend);
     wire        div_q_unf_w   = !div_q_ovf_w && (div_raw_rem_w >= div_original_d);
     wire [31:0] div_adj_q_w   = div_q_ovf_w ? (div_quotient - 32'd1) :
                                  div_q_unf_w ? (div_quotient + 32'd1) :
@@ -1152,7 +1051,7 @@ module mult(
         end else if (MAC_DISPATCH & SLOT) begin
             case (MULCOM2)
                 8'hB1: begin  // DIVU
-                    div_counter    <= 6'd25;
+                    div_counter    <= 6'd14;
                     div_signed_op  <= 1'b0;
                     div_neg_q      <= 1'b0;
                     div_neg_r      <= 1'b0;
@@ -1160,7 +1059,7 @@ module mult(
                     div_load_m2    <= 1'b0;
                 end
                 8'hB9: begin  // DIVS
-                    div_counter    <= 6'd25;
+                    div_counter    <= 6'd14;
                     div_signed_op  <= 1'b1;
                     div_neg_q      <= 1'b0;
                     div_neg_r      <= 1'b0;
@@ -1170,14 +1069,14 @@ module mult(
                 default: ;
             endcase
         end else if (STATE == `DIVOP) begin
-            div_load_m1 <= 1'b0;  // default: clear load signals
+            div_load_m1 <= 1'b0;
             div_load_m2 <= 1'b0;
 
             case (div_counter)
                 //---------------------------
-                // SETUP (counter=25)
+                // SETUP (counter=14)
                 //---------------------------
-                6'd25: begin
+                6'd14: begin
                     if (M2 == 32'd0) begin
                         // Zero division: q=all-1s, r=dividend
                         div_quotient  <= 32'hFFFFFFFF;
@@ -1189,7 +1088,6 @@ module mult(
                         div_remainder <= 33'd0;
                         div_counter   <= 6'd0;
                     end else begin
-                        // Normal case: setup operands and NR initial estimate
                         if (div_signed_op) begin
                             div_neg_q      <= M1[31] ^ M2[31];
                             div_neg_r      <= M1[31];
@@ -1202,107 +1100,95 @@ module mult(
                         div_shift  <= div_setup_clz;
                         div_d_norm <= div_setup_norm;
                         div_recip  <= div_setup_recip;
-                        // Load M1=d_norm, M2=r0 for NR1 multiply
+                        // Kick MUL1: M1=d_norm, M2=r0 (takes effect at next edge)
                         div_load_m1 <= 1'b1;
                         div_load_m2 <= 1'b1;
                         div_m1_val  <= div_setup_norm;
                         div_m2_val  <= div_setup_recip;
-                        div_counter <= 6'd24;
+                        div_counter <= 6'd13;
                     end
                 end
 
                 //---------------------------
-                // NR1: error compute (counter=21)
-                // MACH = (d_norm * r0) >> 32
-                // eps = 0x80000000 - MACH  (= (2 - d*r) in Q2.30)
-                // Load M1=r0, M2=eps for correction multiply
+                // MUL1 use (counter=12): MULT_RESULT = d*r.
+                // eps = 0x80000000 - upper32.
+                // Load M1=r0, M2=eps for MUL2.
                 //---------------------------
-                6'd21: begin
+                6'd12: begin
                     div_load_m1 <= 1'b1;
                     div_load_m2 <= 1'b1;
                     div_m1_val  <= div_recip;
-                    div_m2_val  <= 32'h80000000 - MACH;
-                    div_counter <= div_counter - 6'd1;
+                    div_m2_val  <= 32'h80000000 - div_mul_hi;
+                    div_counter <= 6'd11;
                 end
 
                 //---------------------------
-                // NR1: store r1 (counter=17)
-                // MACH:MACL = r0 * eps
-                // r1 = (r0 * eps) >> 30 = {MACH[29:0], MACL[31:30]}
-                // Load M1=d_norm, M2=r1 for NR2 multiply
+                // MUL2 use (counter=10): MULT_RESULT = r0*eps.
+                // r1 = MULT_RESULT[61:30]. Store div_recip.
+                // Load M1=d_norm, M2=r1 for MUL3.
                 //---------------------------
-                6'd17: begin
+                6'd10: begin
                     div_recip   <= div_nr_new_r;
                     div_load_m1 <= 1'b1;
                     div_load_m2 <= 1'b1;
                     div_m1_val  <= div_d_norm;
                     div_m2_val  <= div_nr_new_r;
-                    div_counter <= div_counter - 6'd1;
+                    div_counter <= 6'd9;
                 end
 
                 //---------------------------
-                // NR2: error compute (counter=13)
-                // MACH = (d_norm * r1) >> 32
-                // eps2 = 0x80000000 - MACH
-                // Load M1=r1, M2=eps2
+                // MUL3 use (counter=8): MULT_RESULT = d*r1.
+                // eps2 = 0x80000000 - upper32.
+                // Load M1=r1, M2=eps2 for MUL4.
                 //---------------------------
-                6'd13: begin
+                6'd8: begin
                     div_load_m1 <= 1'b1;
                     div_load_m2 <= 1'b1;
                     div_m1_val  <= div_recip;
-                    div_m2_val  <= 32'h80000000 - MACH;
-                    div_counter <= div_counter - 6'd1;
+                    div_m2_val  <= 32'h80000000 - div_mul_hi;
+                    div_counter <= 6'd7;
                 end
 
                 //---------------------------
-                // NR2: store r2 (counter=9)
-                // r2 = (r1 * eps2) >> 30
-                // Load M1=dividend, M2=r2
+                // MUL4 use (counter=6): MULT_RESULT = r1*eps2.
+                // r2 = MULT_RESULT[61:30]. Store div_recip.
+                // Load M1=dividend, M2=r2 for MUL5.
                 //---------------------------
-                6'd9: begin
+                6'd6: begin
                     div_recip   <= div_nr_new_r;
                     div_load_m1 <= 1'b1;
                     div_load_m2 <= 1'b1;
                     div_m1_val  <= div_dividend;
                     div_m2_val  <= div_nr_new_r;
-                    div_counter <= div_counter - 6'd1;
+                    div_counter <= 6'd5;
                 end
 
                 //---------------------------
-                // Quotient extract (counter=5)
-                // MACH:MACL = dividend * r2
-                // q = product >> (62 - shift)
-                // Load M1=q, M2=divisor for verification
+                // MUL5 use (counter=4): MULT_RESULT = dividend*r2.
+                // Extract q = MULT_RESULT >> (62 - shift).
+                // Load M1=q, M2=divisor for verify MUL6.
                 //---------------------------
-                6'd5: begin
-                    if (div_shift == 5'd31)
-                        div_quotient <= {MACH[30:0], MACL[31]};
-                    else
-                        div_quotient <= MACH >> (5'd30 - div_shift);
-                    // Load for verify multiply
-                    div_load_m1 <= 1'b1;
-                    div_load_m2 <= 1'b1;
-                    if (div_shift == 5'd31)
-                        div_m1_val <= {MACH[30:0], MACL[31]};
-                    else
-                        div_m1_val <= MACH >> (5'd30 - div_shift);
-                    div_m2_val  <= div_original_d;
-                    div_counter <= div_counter - 6'd1;
+                6'd4: begin
+                    div_quotient <= div_q_from_mul;
+                    div_load_m1  <= 1'b1;
+                    div_load_m2  <= 1'b1;
+                    div_m1_val   <= div_q_from_mul;
+                    div_m2_val   <= div_original_d;
+                    div_counter  <= 6'd3;
                 end
 
                 //---------------------------
-                // Correction + sign (counter=1)
-                // MACH:MACL = q * divisor
-                // Adjust q by ±1 if needed, compute remainder
+                // MUL6 use (counter=2): MULT_RESULT = q*divisor.
+                // Apply ±1 correction, restore sign, compute remainder.
                 //---------------------------
-                6'd1: begin
+                6'd2: begin
                     div_quotient  <= div_neg_q ? (~div_adj_q_w + 32'd1) : div_adj_q_w;
                     div_remainder <= div_neg_r ? {1'b0, ~div_adj_r_w + 32'd1} : {1'b0, div_adj_r_w};
                     div_counter   <= 6'd0;
                 end
 
                 //---------------------------
-                // Default: decrement counter (LOAD, multiply steps, etc.)
+                // Default: decrement non-zero counter (settle cycles 13,11,9,7,5,3,1)
                 //---------------------------
                 default: begin
                     if (div_counter != 6'd0)
