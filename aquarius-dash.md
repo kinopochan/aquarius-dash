@@ -7,7 +7,7 @@ OpenCores の Aquarius (SH-2 互換コア) SVN trunk をベースに、本リポ
 
 - 起点: `c435e79` OpenCores SVN trunk 丸ごと import (42,280 行)
 - 由来: https://opencores.org/projects/aquarius
-- License: 個別ソース参照 (LGPL)
+- License: Public domain (original) + **OpenIP License** (derivatives) — 典拠 `doc/Aquarius.pdf` p.2 "Copyright"。詳細は `LICENSE` 参照。
 - ターゲット: 元は Xilinx Spartan + UCF、現プロジェクトでは Cyclone V へ
 
 ## 改造コミット 3 本
