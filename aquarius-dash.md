@@ -201,7 +201,6 @@ static inline uint32_t divu(uint32_t n, uint32_t m) {
 
 ## 6. 今後の候補 (未実装)
 
-- `FADD / FSUB / FMUL / FDIV` 系は本改造に含まれない
-- CORDIC 系も外付け IP 側 (`parts/fpu-sp-wb/`) で別対応中
+- `FADD / FSUB / FMUL / FDIV` 系は本改造に含まれない (SH-2 自体に FPU 命令がないため)
 - DIVOP のレイテンシはさらに詰められる (settle を消すには M1/M2 を
   assign 化 or 同サイクル更新化が必要)
