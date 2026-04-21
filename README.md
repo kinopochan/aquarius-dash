@@ -1,12 +1,28 @@
-# Aquarius SH-2 CPU Core
+# Aquarius SH-2 CPU Core (aquarius-dash)
 
-This repository is a mirror of the **Aquarius** SH-2 compatible CPU core, originally published on OpenCores.
+This repository starts from an SVN mirror of the **Aquarius** SH-2 compatible CPU core
+originally published on OpenCores (branch `original`, commit `c435e79`), and applies a
+minimal set of modifications on top (branch `main`, aka **Aquarius'** / *aquarius-dash*).
+
+- **Branch `original`**: untouched OpenCores SVN trunk snapshot.
+- **Branch `main`**: modified version with faster multiplier and added DIVU/DIVS.
+- `git diff original..main` shows exactly what was changed.
+- See [`aquarius-dash.md`](aquarius-dash.md) for a detailed list of modifications,
+  including cycle counts and verification status.
 
 ## Source
 
 - **Origin**: OpenCores SVN repository
 - **Original project page**: https://opencores.org/projects/aquarius
-- **License**: See individual source files (LGPL)
+- **Author**: Thorn Aitch
+- **License**: Public domain, with **OpenIP License** applying to derivative works
+  (see `doc/Aquarius.pdf` p.2 "Copyright" section for authoritative terms).
+  Any derivative work based on this IP must be free under OpenIP License,
+  with a documented list of modifications ("the same as in GNU").
+- **SH-2 ISA**: The SuperH-2 Instruction Set Architecture is the property of
+  Renesas Technology Corp. Users adopting this core are responsible for
+  judging potential infringements regarding Renesas's rights.
+- **No warranty** on functionality or performance in real hardware.
 
 ## Contents
 
@@ -20,6 +36,7 @@ This repository is a mirror of the **Aquarius** SH-2 compatible CPU core, origin
 
 ## Notes
 
-- This is a mirror of the SVN trunk content.
+- The `original` branch is a verbatim mirror of the SVN trunk content.
 - The CPU implements a subset of the SH-2 instruction set.
 - FPGA target in the original project is Xilinx Spartan. For Cyclone V usage, see the parent project.
+- Modifications on `main` affect only `verilog/decode.v`, `verilog/defines.v`, `verilog/mult.v`, plus new testbenches `verilog/tb_mult.v` and `verilog/tb_div.v`. All other files are untouched.

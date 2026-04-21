@@ -1,0 +1,13 @@
+# Simulation artifacts
+*.vcd
+*.vvp
+*.out
+*.wlf
+*.log
+
+# Editor / OS
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+*:Zone.Identifier

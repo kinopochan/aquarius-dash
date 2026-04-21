@@ -1,0 +1,98 @@
+Aquarius SH-2 Compatible CPU Core — License
+=============================================
+
+Original author: Thorn Aitch
+Original project: https://opencores.org/projects/aquarius
+Authoritative license text: doc/Aquarius.pdf, page 2 ("Copyright" section)
+
+The following is quoted verbatim from the original project documentation
+(doc/Aquarius.pdf, page 2). In case of any discrepancy between this file and
+the original PDF, the PDF is authoritative.
+
+
+---- BEGIN QUOTE (doc/Aquarius.pdf p.2) ---------------------------------------
+
+Copyright
+
+Aquarius RTL codes and related documents are copyrighted by the author, but
+placed into the public domain.
+
+Designs can be altered while keeping list of modifications "the same as in
+GNU" No money can be earned by selling the designs themselves, but anyone can
+get money by selling the implementation of the design, such as ICs based on
+some cores, boards based on some schematics or Layouts, and even GUI
+interfaces to text mode drivers. "The same as GPL SW" Any update to the
+design should be documented and returned to the design. Any derivative work
+based on the IP should be free under OpenIP License. Derivative work means
+any update, change or improvement on the design. Any work based on the design
+can be either made free under OpenIP license or protected by any other
+license. Work based on the design means any work uses the OpenIP Licensed
+core as a building black without changing anything on it with any other
+blocks to produce larger design. There is NO WARRANTY on the functionality
+or performance of the design on the real hardware implementation.
+
+On the other hand, the SuperH-2 ISA (Instruction Set Architecture) executed
+by Aquarius is rigidly the property of Renesas Technology Corp., which has
+established on April 1st, 2003 by merging semiconductor groups of Hitachi
+and Mitsubishi. Then you have responsibility to judge if there are not any
+infringements to Renesas's rights regarding your Aquarius adoption into your
+design. By adopting Aquarius, the user assumes all responsibility for its use.
+
+Trademark
+
+Aquarius is a name of 5-stages pipelined RISC CPU core that can execute
+SuperH-2 ISA. Aquarius is not registered trademark. If you officially use
+the name of Aquarius to external world, you have responsibility to care the
+legal issues.
+
+Royalty Release
+
+I will not request you any royalties or other financial obligation for your
+Aquarius adoption to your design and production. But you have responsibility
+to judge the usage of SuperH-2 ISA, legally. I strongly recommend you should
+ask Renesas Technology Corp. when you [adopt Aquarius — continued in PDF].
+
+---- END QUOTE ----------------------------------------------------------------
+
+
+Modifications in this repository (aquarius-dash)
+------------------------------------------------
+
+This repository (aquarius-dash) is a derivative work based on the Aquarius
+SH-2 compatible CPU core. Per the original license terms, this derivative
+work is also distributed under the OpenIP License, and the list of
+modifications is documented.
+
+  - See aquarius-dash.md for the full list of modifications with rationale,
+    cycle counts, and verification status.
+  - The `original` branch of this repository preserves the unmodified
+    OpenCores SVN trunk snapshot (commit c435e79) as the starting point.
+  - The `main` branch contains the modified (aquarius-dash) version.
+
+Summary of modifications (see aquarius-dash.md for details):
+  - Added DIVU (0x3nm1) and DIVS (0x3nm9) integer division instructions.
+  - Replaced the 31x16 two-cycle multiplier with a combinational 32x32
+    signed/unsigned multiplier (1-cycle multiply for DMULS.L / DMULU.L /
+    MUL.L / MAC.L / MAC.LS).
+  - Rewrote the division unit to use DSP Newton-Raphson reciprocal
+    (14 busy cycles).
+
+Files actually modified relative to the SVN trunk:
+  verilog/decode.v
+  verilog/defines.v
+  verilog/mult.v
+  verilog/tb_div.v       (new)
+  verilog/tb_mult.v      (new)
+  README.md              (new)
+  LICENSE                (new — this file)
+  aquarius-dash.md       (new — modification documentation)
+  .gitignore             (new)
+
+
+No Warranty
+-----------
+
+As stated in the original Copyright section above, there is NO WARRANTY on
+the functionality or performance of the design on the real hardware
+implementation. The modifications in this repository are provided under the
+same "NO WARRANTY" terms.
