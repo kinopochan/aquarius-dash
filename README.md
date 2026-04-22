@@ -40,3 +40,16 @@ minimal set of modifications on top (branch `main`, aka **Aquarius'** / *aquariu
 - The CPU implements a subset of the SH-2 instruction set.
 - FPGA target in the original project is Xilinx Spartan. For Cyclone V usage, see the parent project.
 - Modifications on `main` affect only `verilog/decode.v`, `verilog/defines.v`, `verilog/mult.v`, plus new testbenches `verilog/tb_mult.v` and `verilog/tb_div.v`. All other files are untouched.
+
+## About the modifications in this fork
+
+kinopochan makes no claim of rights over the modifications in the `main`
+branch.  When using this code, please follow the original upstream
+license (OpenIP License, see above) and include the attribution terms
+it requires, with a documented list of modifications (this repository's
+`aquarius-dash.md` serves as such a list).
+
+この fork の改造差分 (`main` ブランチ) について、きのぽは特に権利
+主張をしません。利用時はオリジナル (上記 OpenIP License) のライセンス
+に従った表記 + 改造内容の記録を含めてください (本リポジトリの
+`aquarius-dash.md` が改造内容の記録として使えます)。
