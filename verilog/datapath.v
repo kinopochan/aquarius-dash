@@ -242,11 +242,13 @@ module datapath(
 //-----------------
     integer i;
 
-    reg  [31:0] XBUS;     // internal X-bus
-    reg  [31:0] YBUS;     // internal Y-bus
-    reg  [31:0] ZBUS;     // internal Z-bus
-    reg  [31:0] WBUS;     // internal W-bus
-    reg  [31:0] VBUS;     // internal V-bus
+    reg  [31:0] XBUS;        // internal X-bus
+    reg  [31:0] YBUS;        // internal Y-bus
+    reg  [31:0] ZBUS;        // internal Z-bus
+    reg  [31:0] WBUS;        // internal W-bus
+    reg  [31:0] VBUS;        // internal V-bus
+    reg  [31:0] XBUS_REGSEL; // X-bus register-side mux (pre-forward)
+    reg  [31:0] YBUS_REGSEL; // Y-bus register-side mux (pre-forward)
 
     wire [31:0] REG_X;     // register out toward X
     wire [31:0] REG_Y;     // register out toward Y
@@ -305,8 +307,11 @@ module datapath(
 //----------
 // X-BUS
 //----------
-    always @(WBUS  or REG_FWD_X
-          or REG_X or RDREG_X 
+// Two-stage mux for Fmax: register-side one-hot mux is computed in parallel
+// with REG_FWD_X path, then merged by a final 2:1 mux. Functionally identical
+// to the original single casex (REG_FWD_X has priority -> WBUS, else one-hot
+// of RD*_X selects, else 0).
+    always @(REG_X or RDREG_X
           or MACH  or RDMACH_X
           or MACL  or RDMACL_X
           or PC    or RDPC_X
@@ -317,53 +322,65 @@ module datapath(
           or PR    or RDPR_X
           or TEMP  or RDTEMP_X)
     begin
-        casex ({REG_FWD_X,
-                RDREG_X, RDMACH_X, RDMACL_X, RDPC_X, RDCONST_X, 
+        casex ({RDREG_X, RDMACH_X, RDMACL_X, RDPC_X, RDCONST_X,
                 RDSR_X, RDGBR_X, RDVBR_X, RDPR_X, RDTEMP_X})
-            11'b1?????????? : XBUS <= WBUS;
-            11'b01000000000 : XBUS <= REG_X;
-            11'b00100000000 : XBUS <= MACH;
-            11'b00010000000 : XBUS <= MACL;
-            11'b00001000000 : XBUS <= PC;
-            11'b00000100000 : XBUS <= CONST;
-            11'b00000010000 : XBUS <= {22'h000000, SR};
-            11'b00000001000 : XBUS <= GBR;
-            11'b00000000100 : XBUS <= VBR;
-            11'b00000000010 : XBUS <= PR; 
-            11'b00000000001 : XBUS <= TEMP;
-            default         : XBUS <= 32'h00000000;
+            10'b1000000000 : XBUS_REGSEL <= REG_X;
+            10'b0100000000 : XBUS_REGSEL <= MACH;
+            10'b0010000000 : XBUS_REGSEL <= MACL;
+            10'b0001000000 : XBUS_REGSEL <= PC;
+            10'b0000100000 : XBUS_REGSEL <= CONST;
+            10'b0000010000 : XBUS_REGSEL <= {22'h000000, SR};
+            10'b0000001000 : XBUS_REGSEL <= GBR;
+            10'b0000000100 : XBUS_REGSEL <= VBR;
+            10'b0000000010 : XBUS_REGSEL <= PR;
+            10'b0000000001 : XBUS_REGSEL <= TEMP;
+            default        : XBUS_REGSEL <= 32'h00000000;
         endcase
+    end
+
+    always @(REG_FWD_X or WBUS or XBUS_REGSEL)
+    begin
+        if (REG_FWD_X)
+            XBUS <= WBUS;
+        else
+            XBUS <= XBUS_REGSEL;
     end
 
 //----------
 // Y-BUS
 //----------
-    always @(WBUS  or REG_FWD_Y
-          or REG_Y or RDREG_Y
+// Same two-stage refactor as X-BUS for Fmax.
+    always @(REG_Y or RDREG_Y
           or MACH  or RDMACH_Y
           or MACL  or RDMACL_Y
           or PC    or RDPC_Y
           or CONST or RDCONST_Y
-          or SR    or RDSR_Y 
+          or SR    or RDSR_Y
           or GBR   or RDGBR_Y
           or VBR   or RDVBR_Y
           or PR    or RDPR_Y)
     begin
-        casex ({REG_FWD_Y,
-                RDREG_Y, RDMACH_Y, RDMACL_Y, RDPC_Y, RDCONST_Y, 
+        casex ({RDREG_Y, RDMACH_Y, RDMACL_Y, RDPC_Y, RDCONST_Y,
                 RDSR_Y, RDGBR_Y, RDVBR_Y, RDPR_Y})
-            10'b1????????? : YBUS <= WBUS;
-            10'b0100000000 : YBUS <= REG_Y;
-            10'b0010000000 : YBUS <= MACH;
-            10'b0001000000 : YBUS <= MACL;
-            10'b0000100000 : YBUS <= PC;
-            10'b0000010000 : YBUS <= CONST;
-            10'b0000001000 : YBUS <= {22'h000000, SR}; 
-            10'b0000000100 : YBUS <= GBR;
-            10'b0000000010 : YBUS <= VBR;
-            10'b0000000001 : YBUS <= PR;
-            default        : YBUS <= 32'h00000000;
+            9'b100000000 : YBUS_REGSEL <= REG_Y;
+            9'b010000000 : YBUS_REGSEL <= MACH;
+            9'b001000000 : YBUS_REGSEL <= MACL;
+            9'b000100000 : YBUS_REGSEL <= PC;
+            9'b000010000 : YBUS_REGSEL <= CONST;
+            9'b000001000 : YBUS_REGSEL <= {22'h000000, SR};
+            9'b000000100 : YBUS_REGSEL <= GBR;
+            9'b000000010 : YBUS_REGSEL <= VBR;
+            9'b000000001 : YBUS_REGSEL <= PR;
+            default      : YBUS_REGSEL <= 32'h00000000;
         endcase
+    end
+
+    always @(REG_FWD_Y or WBUS or YBUS_REGSEL)
+    begin
+        if (REG_FWD_Y)
+            YBUS <= WBUS;
+        else
+            YBUS <= YBUS_REGSEL;
     end
 
 //------
