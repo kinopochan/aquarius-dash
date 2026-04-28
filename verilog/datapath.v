@@ -824,12 +824,39 @@ module datapath(
 //---------------------
 // Program Counter : PC
 //---------------------
+// Fmax: bypass ZBUS and the wide ALUOUT case mux for the PC-update path.
+// WRPC_Z is asserted only by branch / call / return / exception entry, all
+// of which use a small subset of ALUFUNC values:
+//   ALU_ADD  : BSRF/BRAF/BRA/BSR/BT/BF/BT_S/BF_S (PC + offset, PC + Rm)
+//   ALU_DECX2: address-error / NMI / IRQ / GNRL_ILGL entry (PC - 2)
+//   ALU_THRUX: JMP @Rm / JSR @Rm / SLOT_ILGL
+//   ALU_THRUY: RTS (via PR)
+//   ALU_THRUW: RTE / TRAPA / exception fall-through (loaded from MA_DR)
+// For each of these, PC_NEXT is taken from the upstream data source
+// directly, avoiding the 30-way ALUOUT case mux + the ZBUS RDSFT_Z mux.
+// RDSFT_Z is mutually exclusive with WRPC_Z (shift ops never write PC),
+// so the fall-through path "PC_NEXT = ALUOUT" is functionally equivalent
+// to the original "PC <= ZBUS".
+    reg  [31:0] PC_NEXT;
+
+    always @(ALUFUNC or ADDSUBXY or XBUS or YBUS or WBUS or ALUOUT)
+    begin
+        case (ALUFUNC)
+            `ALU_ADD,
+            `ALU_DECX2 : PC_NEXT <= ADDSUBXY[31:0];
+            `ALU_THRUX : PC_NEXT <= XBUS;
+            `ALU_THRUY : PC_NEXT <= YBUS;
+            `ALU_THRUW : PC_NEXT <= WBUS;
+            default    : PC_NEXT <= ALUOUT;
+        endcase
+    end
+
     always @(posedge CLK)
     begin
         if (SLOT)
         begin
             if (WRPC_Z)
-                PC <= ZBUS;
+                PC <= PC_NEXT;
             else if (INCPC)
                 PC <= PCADD2;
         end
