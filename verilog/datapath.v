@@ -824,31 +824,29 @@ module datapath(
 //---------------------
 // Program Counter : PC
 //---------------------
-// Fmax: bypass ZBUS and the wide ALUOUT case mux for the PC-update path.
-// WRPC_Z is asserted only by branch / call / return / exception entry, all
-// of which use a small subset of ALUFUNC values:
-//   ALU_ADD  : BSRF/BRAF/BRA/BSR/BT/BF/BT_S/BF_S (PC + offset, PC + Rm)
-//   ALU_DECX2: address-error / NMI / IRQ / GNRL_ILGL entry (PC - 2)
-//   ALU_THRUX: JMP @Rm / JSR @Rm / SLOT_ILGL
-//   ALU_THRUY: RTS (via PR)
-//   ALU_THRUW: RTE / TRAPA / exception fall-through (loaded from MA_DR)
-// For each of these, PC_NEXT is taken from the upstream data source
-// directly, avoiding the 30-way ALUOUT case mux + the ZBUS RDSFT_Z mux.
-// RDSFT_Z is mutually exclusive with WRPC_Z (shift ops never write PC),
-// so the fall-through path "PC_NEXT = ALUOUT" is functionally equivalent
-// to the original "PC <= ZBUS".
+// Fmax: shorten the PC-update arrival path with two cheap bypasses.
+//
+// (1) RDSFT_Z is mutually exclusive with WRPC_Z (shift ops never write PC,
+//     verified in decode.v). So whenever WRPC_Z is asserted, ZBUS == ALUOUT,
+//     and we can take ALUOUT directly -- drops the ZBUS RDSFT_Z 2:1 mux from
+//     the PC.D arrival path.
+//
+// (2) For ALU_ADD / ALU_DECX2 (the BSRF/BRAF/BRA/BSR/BT/BF branch family
+//     and exception-entry PC-2), ALUOUT == ADDSUBXY[31:0]. Taking ADDSUBXY
+//     directly bypasses the ~30-way ALUOUT case mux on this path -- this is
+//     the dominant slack consumer (REGNUM_Y[*] -> PC[*] via BSRF Rm).
+//
+// Other ALUFUNCs that pair with WRPC_Z (THRUX/THRUY/THRUW) still go through
+// the ALUOUT path -- they're already short and adding more shortcuts costs
+// LABs we don't have on the 5CEFA2.
     reg  [31:0] PC_NEXT;
 
-    always @(ALUFUNC or ADDSUBXY or XBUS or YBUS or WBUS or ALUOUT)
+    always @(ALUFUNC or ADDSUBXY or ALUOUT)
     begin
-        case (ALUFUNC)
-            `ALU_ADD,
-            `ALU_DECX2 : PC_NEXT <= ADDSUBXY[31:0];
-            `ALU_THRUX : PC_NEXT <= XBUS;
-            `ALU_THRUY : PC_NEXT <= YBUS;
-            `ALU_THRUW : PC_NEXT <= WBUS;
-            default    : PC_NEXT <= ALUOUT;
-        endcase
+        if ((ALUFUNC == `ALU_ADD) | (ALUFUNC == `ALU_DECX2))
+            PC_NEXT <= ADDSUBXY[31:0];
+        else
+            PC_NEXT <= ALUOUT;
     end
 
     always @(posedge CLK)
