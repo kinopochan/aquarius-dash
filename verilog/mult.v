@@ -152,6 +152,16 @@ module mult(
     reg         div_neg_r;     // negate remainder at end
     wire        div_write;     // write MACH/MACL with division result
 
+    // Pre-registered SETUP values (computed in counter=15, used in counter=14).
+    // Splitting the setup phase across two cycles shortens the critical path
+    // from M1/M2 -> conditional negate -> CLZ -> norm -> recip -> div_quotient
+    // by registering the absolute-value step.
+    reg  [31:0] div_abs_d_r;        // |M2|  (negated when signed && M2[31])
+    reg  [31:0] div_abs_dividend_r; // |M1|  (negated when signed && M1[31])
+    reg  [31:0] div_dividend_orig_r;// raw M1 (used for zero-divide remainder)
+    reg         div_zero_r;         // M2 == 0
+    reg         div_signed_ovf_r;   // signed && M1==MIN && M2==-1
+
     reg  [31:0] div_d_norm;    // normalized divisor (MSB=1)
     reg  [31:0] div_recip;     // reciprocal estimate (Q2.30)
     reg  [31:0] div_dividend;  // dividend (absolute value)
@@ -992,15 +1002,18 @@ module mult(
 //    1 : (skip via default decrement)
 //    0 : DONE, div_write asserts, quotient/remainder written to MACH/MACL.
 //
-// Total busy cycles: 14 (counter 14..0).
-// Special cases (zero div / signed overflow) complete in 2 busy cycles.
+// Total busy cycles: 15 (counter 15..0).  Counter=15 is the new SETUP_PRE
+// phase that pre-registers the absolute-value step to relax the critical
+// path through CLZ -> norm -> recip in counter=14.
+// Special cases (zero div / signed overflow) complete in 3 busy cycles.
 
     assign div_write = (STATE == `DIVOP) & (div_counter == 6'd0);
 
-    // Setup combinational wires (CLZ, normalize, LUT lookup)
-    wire [31:0] div_setup_abs_d = (div_signed_op && M2[31]) ? (~M2 + 32'd1) : M2;
-    wire [4:0]  div_setup_clz   = clz32(div_setup_abs_d);
-    wire [31:0] div_setup_norm  = div_setup_abs_d << div_setup_clz;
+    // Setup combinational wires (CLZ, normalize, LUT lookup).
+    // Now derive from the registered absolute-value (computed in counter=15)
+    // so this chain starts from a flip-flop, not from the raw M1/M2 inputs.
+    wire [4:0]  div_setup_clz   = clz32(div_abs_d_r);
+    wire [31:0] div_setup_norm  = div_abs_d_r << div_setup_clz;
     wire [31:0] div_setup_recip = recip_rom[div_setup_norm[30:23]];
 
     // Current multiply result (combinational MULT_RESULT on M1, M2).
@@ -1033,25 +1046,30 @@ module mult(
     always @(posedge CLK or posedge RST)
     begin
         if (RST) begin
-            div_counter    <= 6'd0;
-            div_signed_op  <= 1'b0;
-            div_remainder  <= 33'd0;
-            div_quotient   <= 32'd0;
-            div_neg_q      <= 1'b0;
-            div_neg_r      <= 1'b0;
-            div_d_norm     <= 32'd0;
-            div_recip      <= 32'd0;
-            div_dividend   <= 32'd0;
-            div_original_d <= 32'd0;
-            div_shift      <= 5'd0;
-            div_load_m1    <= 1'b0;
-            div_load_m2    <= 1'b0;
-            div_m1_val     <= 32'd0;
-            div_m2_val     <= 32'd0;
+            div_counter         <= 6'd0;
+            div_signed_op       <= 1'b0;
+            div_remainder       <= 33'd0;
+            div_quotient        <= 32'd0;
+            div_neg_q           <= 1'b0;
+            div_neg_r           <= 1'b0;
+            div_d_norm          <= 32'd0;
+            div_recip           <= 32'd0;
+            div_dividend        <= 32'd0;
+            div_original_d      <= 32'd0;
+            div_shift           <= 5'd0;
+            div_load_m1         <= 1'b0;
+            div_load_m2         <= 1'b0;
+            div_m1_val          <= 32'd0;
+            div_m2_val          <= 32'd0;
+            div_abs_d_r         <= 32'd0;
+            div_abs_dividend_r  <= 32'd0;
+            div_dividend_orig_r <= 32'd0;
+            div_zero_r          <= 1'b0;
+            div_signed_ovf_r    <= 1'b0;
         end else if (MAC_DISPATCH & SLOT) begin
             case (MULCOM2)
                 8'hB1: begin  // DIVU
-                    div_counter    <= 6'd14;
+                    div_counter    <= 6'd15;        // was 14: extra SETUP_PRE cycle
                     div_signed_op  <= 1'b0;
                     div_neg_q      <= 1'b0;
                     div_neg_r      <= 1'b0;
@@ -1059,7 +1077,7 @@ module mult(
                     div_load_m2    <= 1'b0;
                 end
                 8'hB9: begin  // DIVS
-                    div_counter    <= 6'd14;
+                    div_counter    <= 6'd15;        // was 14
                     div_signed_op  <= 1'b1;
                     div_neg_q      <= 1'b0;
                     div_neg_r      <= 1'b0;
@@ -1074,32 +1092,42 @@ module mult(
 
             case (div_counter)
                 //---------------------------
-                // SETUP (counter=14)
+                // SETUP_PRE (counter=15) - NEW
+                // Register the absolute value of M1, M2 and the special-case
+                // flags so the longer CLZ/norm/recip chain in counter=14 starts
+                // from flip-flops (not from the raw M1/M2 conditional negate).
+                //---------------------------
+                6'd15: begin
+                    div_zero_r          <= (M2 == 32'd0);
+                    div_signed_ovf_r    <= div_signed_op && (M1 == 32'h80000000) && (M2 == 32'hFFFFFFFF);
+                    div_abs_d_r         <= (div_signed_op && M2[31]) ? (~M2 + 32'd1) : M2;
+                    div_abs_dividend_r  <= (div_signed_op && M1[31]) ? (~M1 + 32'd1) : M1;
+                    div_dividend_orig_r <= M1;                       // for zero-divide remainder
+                    div_neg_q           <= div_signed_op && (M1[31] ^ M2[31]);
+                    div_neg_r           <= div_signed_op && M1[31];
+                    div_counter         <= 6'd14;
+                end
+
+                //---------------------------
+                // SETUP (counter=14) - now uses pre-registered values
                 //---------------------------
                 6'd14: begin
-                    if (M2 == 32'd0) begin
-                        // Zero division: q=all-1s, r=dividend
+                    if (div_zero_r) begin
+                        // Zero division: q=all-1s, r=dividend (raw M1)
                         div_quotient  <= 32'hFFFFFFFF;
-                        div_remainder <= {1'b0, M1};
+                        div_remainder <= {1'b0, div_dividend_orig_r};
                         div_counter   <= 6'd0;
-                    end else if (div_signed_op && M1 == 32'h80000000 && M2 == 32'hFFFFFFFF) begin
-                        // Signed overflow: MIN / -1
+                    end else if (div_signed_ovf_r) begin
+                        // Signed overflow: MIN / -1 -> q=MIN, r=0
                         div_quotient  <= 32'h80000000;
                         div_remainder <= 33'd0;
                         div_counter   <= 6'd0;
                     end else begin
-                        if (div_signed_op) begin
-                            div_neg_q      <= M1[31] ^ M2[31];
-                            div_neg_r      <= M1[31];
-                            div_dividend   <= M1[31] ? (~M1 + 32'd1) : M1;
-                            div_original_d <= M2[31] ? (~M2 + 32'd1) : M2;
-                        end else begin
-                            div_dividend   <= M1;
-                            div_original_d <= M2;
-                        end
-                        div_shift  <= div_setup_clz;
-                        div_d_norm <= div_setup_norm;
-                        div_recip  <= div_setup_recip;
+                        div_dividend   <= div_abs_dividend_r;
+                        div_original_d <= div_abs_d_r;
+                        div_shift      <= div_setup_clz;
+                        div_d_norm     <= div_setup_norm;
+                        div_recip      <= div_setup_recip;
                         // Kick MUL1: M1=d_norm, M2=r0 (takes effect at next edge)
                         div_load_m1 <= 1'b1;
                         div_load_m2 <= 1'b1;

@@ -573,63 +573,52 @@ module mem(
     end
 
 //------------------
-// MA_DR : read data
+// MA_DR : read data (registered, byte-selected at capture time)
 //------------------
-    // capture DATI
+//
+// The original implementation latched DATI into MA_DR_PREV and then
+// produced MA_DR via a combinational byte-select / sign-extend block.
+// That combinational chain sat on the path that feeds the datapath
+// next-PC multiplexer, contributing to the worst-case timing path
+// (mem|MA_DR_PREV[*] -> datapath|PC[*]).
+//
+// This version moves the byte-selection step *into the latch* on the
+// DATI side: the byte-selected value is registered directly into MA_DR
+// at the same clock edge that previously latched MA_DR_PREV.  Functional
+// behaviour is identical (same value visible on the cycle after ACK),
+// but the comb depth between mem.v outputs and downstream logic is
+// reduced by the byte-select stage.
+//
+// MA_DR_PREV is retained as a raw latch in case any other module reads
+// it directly (none currently do, but it is part of the published
+// interface in the .v header).
     always @(posedge CLK) begin
-        if (ACK == 1'b1) begin // it must be captured by ACK (not MEMEND)
+        if (ACK == 1'b1) begin
             if ((STATE[1] == 1'b1) && (WE == 1'b0)) begin
                 MA_ACCESS_SZ <= ACCESS_SZ;
-                MA_ADR <= ADR[1:0];
-                MA_DR_PREV <= DATI;
+                MA_ADR       <= ADR[1:0];
+                MA_DR_PREV   <= DATI;
+
+                case (ACCESS_SZ)
+                    2'b00: begin // byte (sign-extended)
+                        case (ADR[1:0])
+                            2'b00: MA_DR <= {{24{DATI[31]}}, DATI[31:24]};
+                            2'b01: MA_DR <= {{24{DATI[23]}}, DATI[23:16]};
+                            2'b10: MA_DR <= {{24{DATI[15]}}, DATI[15:8]};
+                            2'b11: MA_DR <= {{24{DATI[7]}},  DATI[7:0]};
+                        endcase
+                    end
+                    2'b01: begin // word (sign-extended)
+                        if (ADR[1] == 1'b0)
+                            MA_DR <= {{16{DATI[31]}}, DATI[31:16]};
+                        else
+                            MA_DR <= {{16{DATI[15]}}, DATI[15:0]};
+                    end
+                    2'b10:   MA_DR <= DATI;          // long
+                    default: MA_DR <= DATI;          // matches Thorn Aitch 2003/12/10
+                endcase
             end
         end
-    end
-   // output to MA_DR with Sign Extended
-    always @(MA_ACCESS_SZ or MA_DR_PREV or MA_ADR) begin
-        case (MA_ACCESS_SZ)
-            2'b00: begin //byte
-                       if ({MA_ADR[1], MA_ADR[0]} == 2'b00)
-                           begin
-                               for (i = 8 ; i <= 31 ; i = i + 1) MA_DR[i] <= MA_DR_PREV[31];
-                               MA_DR[7:0] <= MA_DR_PREV[31:24];
-                           end
-                       else if ({MA_ADR[1], MA_ADR[0]} == 2'b01)
-                           begin
-                               for (i = 8 ; i <= 31 ; i = i + 1) MA_DR[i] <= MA_DR_PREV[23];
-                               MA_DR[7:0] <= MA_DR_PREV[23:16];
-                           end
-                       else if ({MA_ADR[1], MA_ADR[0]} == 2'b10)
-                           begin
-                               for (i = 8 ; i <= 31 ; i = i + 1) MA_DR[i] <= MA_DR_PREV[15];
-                               MA_DR[7:0] <= MA_DR_PREV[15:8];
-                           end
-                       else if ({MA_ADR[1], MA_ADR[0]} == 2'b11)
-                           begin
-                               for (i = 8 ; i <= 31 ; i = i + 1) MA_DR[i] <= MA_DR_PREV[7];
-                               MA_DR[7:0] <= MA_DR_PREV[7:0];
-                           end
-                   end
-            2'b01: begin //word
-                       if (MA_ADR[1] == 1'b0)
-                           begin
-                               for (i = 16 ; i <= 31 ; i = i + 1) MA_DR[i] <= MA_DR_PREV[31];
-                               MA_DR[15:0] <= MA_DR_PREV[31:16];
-                           end
-                       else
-                           begin
-                               for (i = 16 ; i <= 31 ; i = i + 1) MA_DR[i] <= MA_DR_PREV[15];
-                               MA_DR[15:0] <= MA_DR_PREV[15:0];
-                           end
-                   end
-            2'b10: begin //long
-                       MA_DR[31:0] <= MA_DR_PREV[31:0];
-                   end
-            default : begin
-                          //MA_DR[31:0] <= 32'hxxxxxxxx;    // Thorn Aitch 2003/12/10 
-					 MA_DR[31:0] <= MA_DR_PREV[31:0];  // Thorn Aitch 2003/12/10
-                      end
-        endcase
     end
     // output
     //always @(posedge CLK) begin
