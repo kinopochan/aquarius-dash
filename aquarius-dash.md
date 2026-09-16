@@ -164,6 +164,12 @@ wire        [63:0] MULT_RESULT = MULT_RAW[63:0];
 他のファイル (cpu.v, datapath.v, memory*.v, top.v, sys.v 等) は
 SVN trunk **ノータッチ**。
 
+**[branch: `feature/custom-shift-rotate-ops`, 未マージ]** 上記に加え、
+`verilog/datapath.v` (+16 行, バレルシフタ配線)、`verilog/defines.v` (+4 行)、
+`verilog/decode.v` (+39 行, SHAD/SHLD/ROTLV/ROTRV デコード) を変更。
+`verilog/tb_shift_unit.v` / `verilog/tb_cpu_custom.v` を新規追加。
+詳細は本ファイル 7 章参照。
+
 ---
 
 ## 4. コンパイラから叩くには
@@ -199,7 +205,71 @@ static inline uint32_t divu(uint32_t n, uint32_t m) {
 
 ---
 
-## 6. 今後の候補 (未実装)
+## 7. [branch: `feature/custom-shift-rotate-ops`, 未マージ] 追加命令: SHAD / SHLD / ROTLV / ROTRV
+
+**この章は `main` にはまだ入っていない。** ブランチ `feature/custom-shift-rotate-ops`
+(commit `ad9739c`) の内容。マージ後は章番号を含めて見直すこと。
+
+### 背景
+
+`hobicom-artix` プロジェクトの CPU コア更新 (Artix-7 移植) に合わせて追加。
+Artix-7 対応自体 (RAM の `$readmemh` 化等) は `hobicom-artix` リポジトリ側の
+作業で、本リポジトリの改造点はここに記す独自命令のみ。
+
+### エンコーディング
+
+| 命令 | オペコード | 意味 |
+|------|-----------|------|
+| `SHAD Rm,Rn` | `4nmC` | Rm≥0: `Rn <<= Rm[4:0]` / Rm<0: `Rn >>>= 32-Rm[4:0]` (算術, 符号拡張) |
+| `SHLD Rm,Rn` | `4nmD` | Rm≥0: `Rn <<= Rm[4:0]` / Rm<0: `Rn >>= 32-Rm[4:0]` (論理) |
+| `ROTLV R0,Rn` | `4n34` | `Rn` を `R0[4:0]` ビット左ローテート |
+| `ROTRV R0,Rn` | `4n35` | `Rn` を `R0[4:0]` ビット右ローテート |
+
+- `SHAD`/`SHLD` は**実物の SH-3 のオペコードと完全にビット互換**(このコア自体は
+  SH-2 のまま、対象命令だけ拡張)。回転量 0 のときの符号拡張/ゼロ埋めも実機仕様通り。
+- `ROTLV`/`ROTRV` は SH-1〜4 のどのファミリにも存在しない完全な独自命令。
+  4xxx シフト/ローテート系の空きスロット (`4n34`/`4n35`) に配置。
+  回転量は R0 固定 (1 レジスタ形式の制約)。
+- いずれも **T ビットは変化しない**。
+
+### 実装 (decode.v / datapath.v / defines.v)
+
+- `defines.v`: `SFTFUNC` に `SHAD/SHLD/ROTLV/ROTRV` の4値を追加 (既存 14 種の続き)
+- `decode.v`: `4xxx` casex に `6'b??110?` (SHAD/SHLD) と `6'b11010?` (ROTLV/ROTRV,
+  `INSTR_STATE[7:6]==00` で他スロットとの衝突回避) を追加
+- `datapath.v`: バレルシフタ配線 (`DSFT_L/DSFT_R/DSFT_AR/DSFT_LR/DSFT_RL`、
+  シフト量は `YBUS[4:0]`) を追加し、`SFTOUT` の `case` に4パターン追加。
+  シフタの `always` 文は `YBUS` 依存が増えたため `@(SFTFUNC or XBUS or SR)` から
+  `@*` に変更 (感度リスト漏れ対策)。
+
+### 検証
+
+- `verilog/tb_shift_unit.v`: バレルシフタ式を独立実装のリファレンスモデルと
+  突き合わせ。境界値 (シフト量 0/31、正負) + ランダム 50 万件、不一致 0。
+- `verilog/tb_cpu_custom.v`: `cpu` モジュール全体 (decode+datapath+register+mem)
+  に簡易 Wishbone メモリを繋ぎ、手組み機械語を実行する結合テスト。
+  SHAD/SHLD (正負シフト量) / ROTLV/ROTRV、計 5 ケース PASS。
+
+### hobicom-artix (xc7a50t) での合成結果
+
+- DSP48E1: 追加後の `CPU/DATAPATH` 配下は **0 DSP** (シフタは全て LUT 実装)。
+  全体の DSP 増分 (+2, 7→9) はこの命令追加とは無関係で、乗算器 (`mult.v`,
+  33×33 単サイクル化) 由来と判明 (`report_utilization -hierarchical` で確認)。
+- Timing: `clk_cpu` 46.15MHz で当初 WNS -1.47ns (194 endpoints 違反) だったが、
+  ワーストパスは `DECODE.TEMP`→`SR[0]`→`FSM_sequential_STATE`→`MEM.ADR` の
+  既存制御パス (26 段) であり、追加した SHAD/SHLD/ROTLV/ROTRV のシフタ経路
+  ではなかった。Vivado impl strategy を `Performance_ExplorePostRoutePhysOpt`
+  に変更して timing closure (この経路はマージン薄めなので今後注意)。
+
+### コンパイラから叩くには
+
+SHAD/SHLD は GCC (`-m3`) が出す可能性があるが、既存アプリの Makefile は
+すべて `-m2` のまま (要変更・未対応)。ROTLV/ROTRV はコンパイラが知らないので
+`.word` 直書きかアセンブリ関数化が必須 (呼び出し規約は `divu`/`divs` の例と同様)。
+
+---
+
+## 8. 今後の候補 (未実装)
 
 - `FADD / FSUB / FMUL / FDIV` 系は本改造に含まれない (SH-2 自体に FPU 命令がないため)
 - DIVOP のレイテンシはさらに詰められる (settle を消すには M1/M2 を

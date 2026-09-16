@@ -40,6 +40,11 @@ minimal set of modifications on top (branch `main`, aka **Aquarius'** / *aquariu
 - The CPU implements a subset of the SH-2 instruction set.
 - FPGA target in the original project is Xilinx Spartan. For Cyclone V usage, see the parent project.
 - Modifications on `main` affect only `verilog/decode.v`, `verilog/defines.v`, `verilog/mult.v`, plus new testbenches `verilog/tb_mult.v` and `verilog/tb_div.v`. All other files are untouched.
+- **Branch `feature/custom-shift-rotate-ops`** (not yet merged into `main`): adds
+  custom SHAD/SHLD (SH-3 opcode-compatible) and ROTLV/ROTRV (fully custom) shift/rotate
+  instructions on top of `main`. Touches `verilog/decode.v`, `verilog/defines.v`,
+  `verilog/datapath.v`, plus new testbenches `verilog/tb_shift_unit.v` and
+  `verilog/tb_cpu_custom.v`. See [`aquarius-dash.md`](aquarius-dash.md) section 7.
 
 ## About the modifications in this fork
 
