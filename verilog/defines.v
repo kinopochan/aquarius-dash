@@ -135,6 +135,10 @@
 `define SHLR2  5'b00101
 `define SHLR8  5'b01101
 `define SHLR16 5'b10101
+`define SHAD   5'b11100  // custom: dynamic arithmetic shift, amount in Rm
+`define SHLD   5'b11101  // custom: dynamic logical shift, amount in Rm
+`define ROTLV  5'b11110  // custom: variable left rotate, amount in R0
+`define ROTRV  5'b11111  // custom: variable right rotate, amount in R0
 
 //----------------
 // SR bit Position

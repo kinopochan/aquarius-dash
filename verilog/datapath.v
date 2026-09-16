@@ -743,7 +743,17 @@ module datapath(
 //-----------------
 // Shifter Function
 //-----------------
-    always @(SFTFUNC or XBUS or SR)
+    // Barrel shifter operands for SHAD/SHLD/ROTLV/ROTRV. Shift amount comes
+    // from YBUS[4:0] (Rm for SHAD/SHLD, R0 for ROTLV/ROTRV).
+    wire        [4:0]  DSFT_N  = YBUS[4:0];
+    wire signed [31:0] XBUS_S  = XBUS;
+    wire        [31:0] DSFT_L  = XBUS << DSFT_N;
+    wire        [31:0] DSFT_AR = (XBUS_S >>> 1) >>> (~DSFT_N); // 32-n arithmetic right (n=0 -> 32)
+    wire        [31:0] DSFT_LR = (XBUS   >>  1) >>  (~DSFT_N); // 32-n logical right (n=0 -> 32)
+    wire        [31:0] DSFT_R  = XBUS >> DSFT_N;
+    wire        [31:0] DSFT_RL = (XBUS << 1) << (~DSFT_N);     // 32-n left shift (n=0 -> 0)
+
+    always @*
     begin
         case (SFTFUNC)
             `SHLL   : SFTOUT <= {XBUS[30:0], 1'b0};
@@ -760,6 +770,10 @@ module datapath(
             `SHLR2  : SFTOUT <= {2'b00, XBUS[31:2]};
             `SHLR8  : SFTOUT <= {8'h00, XBUS[31:8]};
             `SHLR16 : SFTOUT <= {16'h0000, XBUS[31:16]};
+            `SHAD   : SFTOUT <= YBUS[31] ? DSFT_AR : DSFT_L;
+            `SHLD   : SFTOUT <= YBUS[31] ? DSFT_LR : DSFT_L;
+            `ROTLV  : SFTOUT <= DSFT_L | DSFT_LR;
+            `ROTRV  : SFTOUT <= DSFT_R | DSFT_RL;
             default: SFTOUT <= 32'hxxxxxxxx;
         endcase
         case (SFTFUNC)

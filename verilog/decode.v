@@ -2115,6 +2115,45 @@ module decode(
                      end
                   default : ;
                 endcase
+        //------------------------
+        // SHAD Rm, Rn (4nmC)  custom
+        // SHLD Rm, Rn (4nmD)  custom
+        //------------------------
+              6'b??110? :
+                begin
+                  EX_RDREG_X  = 1'b1;
+                  EX_REGNUM_X = INSTR_STATE[11:8]; // Rn
+                  EX_RDREG_Y  = 1'b1;
+                  EX_REGNUM_Y = INSTR_STATE[7:4];  // Rm
+                  EX_SFTFUNC  = INSTR_STATE[0] ? `SHLD : `SHAD;
+                  EX_RDSFT_Z  = 1'b1;              // T is unchanged, so EX_T_SFTSET is not set
+                  EX_WRREG_Z  = 1'b1;
+                  EX_REGNUM_Z = INSTR_STATE[11:8]; // Rn
+                  ID_INCPC    = 1'b1;
+                  ID_IF_ISSUE = 1'b1;
+                  DISPATCH    = 1'b1;
+                end
+        //--------------------------------
+        // ROTLV R0,Rn (4n34)  custom
+        // ROTRV R0,Rn (4n35)  custom
+        //--------------------------------
+              6'b11010? :
+                begin
+                  if (INSTR_STATE[7:6] == 2'b00) // avoid aliasing 4n74/4nB4/4nF4 etc.
+                    begin
+                      EX_RDREG_X  = 1'b1;
+                      EX_REGNUM_X = INSTR_STATE[11:8]; // Rn
+                      EX_RDREG_Y  = 1'b1;
+                      EX_REGNUM_Y = 4'h0;              // R0 = rotate amount
+                      EX_SFTFUNC  = INSTR_STATE[0] ? `ROTRV : `ROTLV;
+                      EX_RDSFT_Z  = 1'b1;
+                      EX_WRREG_Z  = 1'b1;
+                      EX_REGNUM_Z = INSTR_STATE[11:8]; // Rn
+                    end
+                  ID_INCPC    = 1'b1;
+                  ID_IF_ISSUE = 1'b1;
+                  DISPATCH    = 1'b1;
+                end
         //---------------
         // Default = NOP
         //---------------
