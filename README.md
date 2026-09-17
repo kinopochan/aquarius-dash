@@ -45,6 +45,9 @@ minimal set of modifications on top (branch `main`, aka **Aquarius'** / *aquariu
   instructions on top of `main`. Touches `verilog/decode.v`, `verilog/defines.v`,
   `verilog/datapath.v`, plus new testbenches `verilog/tb_shift_unit.v` and
   `verilog/tb_cpu_custom.v`. See [`aquarius-dash.md`](aquarius-dash.md) section 7.
+  Also adds a `CAS.L` atomic compare-and-swap instruction (`2nm3`, own design
+  inspired by J-core's SMP support, not verified bit-compatible) touching only
+  `verilog/decode.v`, plus `verilog/tb_cas.v`. See section 9.
 
 ## About the modifications in this fork
 

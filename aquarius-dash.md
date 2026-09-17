@@ -323,3 +323,74 @@ SHAD/SHLD は GCC (`-m3`) が出す可能性があるが、既存アプリの Ma
   ISR 追加時に pragma を付け忘れる事故を機械的に検出できる
   (jintori プロジェクトの `check_isa.sh` で実装・不安定ビルドでの検出実績あり)。
 
+---
+
+## 9. [branch: `feature/custom-shift-rotate-ops`, 未マージ] 追加命令: CAS.L
+
+**この章も `main` にはまだ入っていない。** `hobicom-artix` の派生 (SMP 化検討)
+向けに、アトミックな compare-and-swap 命令を追加した。J-core の SMP 対応
+命令 (`CAS.L`) から着想を得たオリジナル実装で、ビット単位の互換性を
+検証したものではない (バイナリ互換を主張するものではなく、機能として
+同じ役割の命令を独自に実装したもの、という位置づけ)。
+
+### エンコーディングとセマンティクス
+
+`2nm3` — `aquarius-dash-plan.md` 5 章で「SH ファミリで未使用のきれいな
+空きだが、現デコーダは `2xxx` を `4'b00??` で拾っており `MOV Rm,@Rn`
+(サイズ 0b11) として誤動作する、使うにはデコード修正必須」と指摘されて
+いたスロットそのもの。
+
+| 命令 | オペコード | 意味 |
+|------|-----------|------|
+| `CAS.L Rm,Rn,@R0` | `2nm3` | `Rn`=アドレス、`Rm`=新値、`R0`=期待値(比較対象)。<br>`@Rn == R0` なら `@Rn = Rm` (T=1)、そうでなければ `R0 = @Rn` (T=0)。 |
+
+- `Rn` (bit 11:8) = 対象アドレスを持つレジスタ
+- `Rm` (bit 7:4) = 一致時に書き込む新しい値
+- `R0` = 期待する古い値 (比較対象)。**不一致時は実際の値に書き換わる**
+  (x86 の `CMPXCHG` や real SH-4A の `MOVLI.L`/`MOVCO.L` ペアと同じ用途)
+- サイズは long 固定 (byte/word 版は無い)
+- T ビットは比較結果を反映 (CMP/EQ と同じ)
+
+### 実装 (decode.v のみ、defines.v/datapath.v は無改造)
+
+既存の ALU 定数 (`ALU_THRUX`, `ALU_THRUW`, `CMPEQ`) と `TEMP` スクラッチ
+レジスタだけで実装でき、`SFTFUNC` 等の新規追加は不要だった。5〜6 ステップ
+の `INSTR_SEQ` マイクロシーケンス (成立/不成立で分岐、`RTE`/`STC.L` と
+同じ「読み出し issue → 2 ステップ後に `ALU_THRUW` で WBUS を consume」
+「書き込み issue の翌ステップで dispatch」という既存の待ち時間規約を踏襲):
+
+```
+0: Rn を読んで @Rn の読み出しを issue (WB_RDMADR_W)
+1: settle (ロード結果が WBUS に乗るのを待つだけ)
+2: ALU_THRUW で WBUS → TEMP に捕獲
+3: TEMP (X-bus) vs R0 (Y-bus) を CMPEQ で比較、T にセット
+4: T_BCC を見て分岐
+     match:    @Rn = Rm の書き込みを issue (R0 は触らない)
+     mismatch: R0 = TEMP、ここで dispatch
+5: (match のときだけ) 書き込み issue の後で dispatch
+```
+
+`2xx0`/`2xx1`/`2xx2` (`MOV.L/W/B Rm,@Rn`) 用の既存 `4'b00??` ワイルド
+カードは、casex の評価順で `2nm3` の専用ケースより後ろに来るよう並べ
+直しただけで、ロジック自体は無改造 (`2xx3` だけを新ケースが横取りする)。
+
+### 検証
+
+- `verilog/tb_cas.v`: `cpu` モジュール全体 (decode+datapath+register+mem)
+  に簡易 Wishbone メモリを繋いだ結合テスト。
+  - match ケース (期待値一致): メモリが新値に書き換わり、R0 は不変、T=1
+  - mismatch ケース (期待値不一致): メモリは不変、R0 が実際の値に、T=0
+  - 6 チェック全て PASS (メモリ内容・R0・T ビットをそれぞれ確認)
+- ランダム/境界値の大量テストは未実施 (SHAD/SHLD 等の純粋な組み合わせ回路と
+  違い、多サイクルのメモリ read-modify-write シーケンスなので、テスト
+  ケースの構築コストが高い。ディレクティッドテスト 2 本での検証に留めている)
+
+### 未確認事項 (SMP 化の前提として重要)
+
+- **`hobicom-artix` 側のバスアービタ (`wb_arb4_p`) が、`CAS.L` の
+  read→compare→write の間、同じアドレスへの他マスタのアクセスを
+  ブロックする保証をしているかは未確認。** CPU コア単体の実装は
+  read-modify-write の 2 回のメモリアクセスをただ順番に発行するだけで、
+  その間のバス排他性はコア側では一切保証していない。真の SMP アトミック性
+  はアービタ側の対応とセットで初めて成立する。
+
