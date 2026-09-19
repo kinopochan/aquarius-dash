@@ -49,6 +49,19 @@ module tb_cas;
             DMEM[ADR[9:2]] <= DATO;
     end
 
+    // Atomicity check: once CAS.L's read of the shared word is on the bus,
+    // CYC must stay asserted (read-modify-write cycle) until the next
+    // instruction fetch begins -- the arbiter relies on this to not hand the
+    // bus to another master in the middle.
+    reg in_rmw;
+    integer cyc_drops;
+    initial begin in_rmw = 1'b0; cyc_drops = 0; end
+    always @(posedge CLK) begin
+        if (in_rmw && !CYC) cyc_drops = cyc_drops + 1;
+        if (STB && !WE && ADR == 32'h00000800) in_rmw <= 1'b1;
+        else if (STB && !WE && ADR != 32'h00000800) in_rmw <= 1'b0;
+    end
+
     initial CLK <= 1'b0;
     always #(`HALF_CYCLE) CLK <= ~CLK;
 
@@ -142,6 +155,8 @@ module tb_cas;
         check32("test2 mem[@0x800] unchanged on mismatch", DMEM[0], 32'h00000055);
         check32("test2 R0 becomes loaded value",           CPU.DATAPATH.REGISTER.REG[0], 32'h00000055);
         check32("test2 T bit clear on mismatch",           {31'b0, CPU.DATAPATH.SR[0]}, 32'h00000000);
+
+        check32("CYC_O held through both RMW cycles (drops)", cyc_drops, 32'h00000000);
 
         $display("---- cas.l test: %0d pass, %0d fail ----", pass_count, fail_count);
         if (fail_count != 0) $display("*** CAS.L TEST FAILED ***");

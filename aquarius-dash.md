@@ -360,10 +360,10 @@ SHAD/SHLD は GCC (`-m3`) が出す可能性があるが、既存アプリの Ma
 「書き込み issue の翌ステップで dispatch」という既存の待ち時間規約を踏襲):
 
 ```
-0: Rn を読んで @Rn の読み出しを issue (WB_RDMADR_W)
-1: settle (ロード結果が WBUS に乗るのを待つだけ)
-2: ALU_THRUW で WBUS → TEMP に捕獲
-3: TEMP (X-bus) vs R0 (Y-bus) を CMPEQ で比較、T にセット
+0: Rn を読んで @Rn の読み出しを issue (WB_RDMADR_W, EX_KEEP_CYC)
+1: settle (ロード結果が WBUS に乗るのを待つだけ, EX_KEEP_CYC)
+2: ALU_THRUW で WBUS → TEMP に捕獲 (EX_KEEP_CYC)
+3: TEMP (X-bus) vs R0 (Y-bus) を CMPEQ で比較、T にセット (EX_KEEP_CYC)
 4: T_BCC を見て分岐
      match:    @Rn = Rm の書き込みを issue (R0 は触らない)
      mismatch: R0 = TEMP、ここで dispatch
@@ -385,12 +385,32 @@ SHAD/SHLD は GCC (`-m3`) が出す可能性があるが、既存アプリの Ma
   違い、多サイクルのメモリ read-modify-write シーケンスなので、テスト
   ケースの構築コストが高い。ディレクティッドテスト 2 本での検証に留めている)
 
-### 未確認事項 (SMP 化の前提として重要)
+### バスの排他 (`CYC_O` の保持)
 
-- **`hobicom-artix` 側のバスアービタ (`wb_arb4_p`) が、`CAS.L` の
-  read→compare→write の間、同じアドレスへの他マスタのアクセスを
-  ブロックする保証をしているかは未確認。** CPU コア単体の実装は
-  read-modify-write の 2 回のメモリアクセスをただ順番に発行するだけで、
-  その間のバス排他性はコア側では一切保証していない。真の SMP アトミック性
-  はアービタ側の対応とセットで初めて成立する。
+`TAS.B` と同じく、`mem.v` の元からある `KEEP_CYC` 機構
+(`decode.v` の `EX_KEEP_CYC`、`CYC_O` を「read-modify-write サイクル」として
+read から write の後まで保持する、Wishbone classic の RMW サイクル) を使う。
+`mem.v` は `MEMEND` (バスがアイドルか ACK を受けた時) ごとに
+`NEXT_KEEP_CYC <= KEEP_CYC` を取り込んで `CYC_O` に反映するため、
+**アイドル区間も含めて `EX_KEEP_CYC` を立て続ける必要がある**
+(`TAS.B` は read と write の間が 1 ステップなので step0 だけで足りるが、
+`CAS.L` は 3 ステップ空くので step0〜3 で立てる)。step4 以降は立てず、
+write 完了 (不一致なら比較完了) の後で `CYC_O` が落ちる。
 
+当初のコミット (`01caddc`) はこの `EX_KEEP_CYC` を立て忘れていて、read と write
+の間で `CYC_O` が 3 クロック落ちていた (アービタが途中でバスを他マスタに
+渡せてしまい、SMP アトミックにならない)。`hobicom-artix` 側の実測
+(inbox 経由) で判明し、修正済み。
+
+- 修正後の波形 (`tb_cas.v` の match ケース): read(`ADR=0x800`) の CYC=1
+  から write を経て次の命令フェッチまで、**CYC_O は 1 のまま途切れない**
+- `tb_cas.v` に「CAS の read から次のフェッチまで `CYC_O` が落ちない」検査を
+  追加 (修正前のコードでは 5 クロック分の低下を検出して FAIL することを確認)
+- 新規ポート (`LOCK_O` 等) は不要。`cpu.v` のポートは無変更
+- 不一致ケース (write が出ない) でも read〜比較完了まで `CYC_O` は保持され、
+  永続的にバスを止めることはない
+
+なお本コアがバスを保持するのは `CYC_O` までで、複数マスタ間でそれを尊重
+するのはアービタ側の責務 (`wb_arb4_p` は「グラントを握っているマスタの
+`cyc` が下りるまで切り替えない」仕様)。キャッシュ (`wb_cache_ddr3`) 経由だと
+古い値を読みうるため、CAS.L の対象は非キャッシュ窓に置く必要がある。

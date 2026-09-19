@@ -1498,12 +1498,15 @@ module decode(
                          {EX_MA_ISSUE,EX_MA_WR} = 2'b10;  // read
                          EX_MA_SZ    = 2'b10;             // long
                          WB_RDMADR_W = 1'b1;
+                         EX_KEEP_CYC = 1'b1; // hold CYC_O across the whole read-modify-write
                        end
                     1: begin // settle: wait for the load to reach WBUS
+                         EX_KEEP_CYC = 1'b1;
                        end
                     2: begin // capture loaded value into TEMP
                          EX_ALUFUNC = `ALU_THRUW; // Z = WBUS
                          EX_WRTEMP_Z = 1'b1;
+                         EX_KEEP_CYC = 1'b1;
                        end
                     3: begin // compare TEMP (loaded value) against R0 (expected)
                          EX_RDTEMP_X = 1'b1;
@@ -1511,6 +1514,7 @@ module decode(
                          EX_REGNUM_Y = 4'h0; // R0
                          EX_CMPCOM   = `CMPEQ;
                          EX_T_CMPSET = 1'b1;
+                         EX_KEEP_CYC = 1'b1;
                        end
                     4: begin
                          if (T_BCC) begin
