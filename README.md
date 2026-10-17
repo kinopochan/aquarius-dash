@@ -49,6 +49,15 @@ minimal set of modifications on top (branch `main`, aka **Aquarius'** / *aquariu
   operand semantics matched to J-core's `CAS.L`) touching only
   `verilog/decode.v`, plus `verilog/tb_cas.v`. See section 9.
 
+## Compatibility
+
+SH-2 based, with SH-3 `SHAD`/`SHLD` and J2 (J-core) `CAS.L` adopted with
+compatible opcodes and semantics. SH-2A and later extensions are not
+followed. `DIVU`/`DIVS` (`3nm1`/`3nm9`) and `ROTLV`/`ROTRV` are custom
+instructions; `DIVU`/`DIVS` are unrelated to the SH-2A instructions of the
+same name, and their opcodes collide with SH-2A 32-bit instructions, so SH-2A
+binaries will not run. See [`aquarius-dash.md`](aquarius-dash.md).
+
 ## About the modifications in this fork
 
 kinopochan makes no claim of rights over the modifications in the `main`

@@ -10,6 +10,23 @@ OpenCores の Aquarius (SH-2 互換コア) SVN trunk をベースに、本リポ
 - License: Public domain (original) + **OpenIP License** (derivatives) — 典拠 `doc/Aquarius.pdf` p.2 "Copyright"。詳細は `LICENSE` 参照。
 - ターゲット: 元は Xilinx Spartan + UCF、現プロジェクトでは Cyclone V へ
 
+## 互換性の方針
+
+SH-2 を基本に、SH-3 の `SHAD`/`SHLD` (7 章) と J2 (J-core) の `CAS.L` (9 章) を
+オペコード・セマンティクスとも互換で取り込んでいる。SH-2A 以降の拡張は
+参照していない。
+
+独自命令は `DIVU`/`DIVS` (1 章) と `ROTLV`/`ROTRV` (7 章)。`DIVU`/`DIVS` は
+SH-2A の同名命令 (`DIVU R0,Rn` = `4n84`, `DIVS R0,Rn` = `4n94`) とは無関係で、
+3 番台ブロックの空き (`3nm1` / `3nm9`) に、`DMULU`/`DMULS` (`3nm5` / `3nmD`)
+と同じ「bit3 = 符号付き」の規則で置いている。`3nm1` / `3n?9` は SH-2A では
+32 ビット命令の先頭ワード (`3nm1` = disp12 付き `MOV`/`MOVU`、`3n09` 系 =
+`BCLR.B`/`BSET.B` 等のビット操作) に使われているため、SH-2A 向けのバイナリは
+動かない (binutils `-isa=sh2a` のアセンブル結果で確認)。
+
+`SHAD`/`SHLD`/`ROTLV`/`ROTRV`/`CAS.L` は `feature/custom-shift-rotate-ops`
+ブランチにのみあり、`main` には未マージ。
+
 ## 改造コミット 3 本
 
 | commit | 日付 | 主題 |
