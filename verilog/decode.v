@@ -1484,15 +1484,15 @@ module decode(
         //--------------------------------------------------------
         // CAS.L Rm, Rn, @R0 (2nm3)  custom, J-core compatible
         //
-        // Atomic compare-and-swap: if (@Rn == R0) *Rn = Rm, T=1
-        //                          else R0 = @Rn, T=0
+        // Atomic compare-and-swap:
+        //   tmp = @R0; if (tmp == Rm) { @R0 = Rn; T=1 } else T=0; Rn = tmp
         //--------------------------------------------------------
               4'b0011 : // 2nm3
                 begin
                   case (INSTR_SEQ)
-                    0: begin // issue read of @Rn
+                    0: begin // issue read of @R0
                          EX_RDREG_X  = 1'b1;
-                         EX_REGNUM_X = INSTR_STATE[11:8]; // Rn (address)
+                         EX_REGNUM_X = 4'h0;              // R0 (address)
                          EX_ALUFUNC  = `ALU_THRUX;
                          EX_WRMAAD_Z = 1'b1;
                          {EX_MA_ISSUE,EX_MA_WR} = 2'b10;  // read
@@ -1508,39 +1508,43 @@ module decode(
                          EX_WRTEMP_Z = 1'b1;
                          EX_KEEP_CYC = 1'b1;
                        end
-                    3: begin // compare TEMP (loaded value) against R0 (expected)
+                    3: begin // compare TEMP (loaded value) against Rm (expected)
                          EX_RDTEMP_X = 1'b1;
                          EX_RDREG_Y  = 1'b1;
-                         EX_REGNUM_Y = 4'h0; // R0
+                         EX_REGNUM_Y = INSTR_STATE[7:4]; // Rm
                          EX_CMPCOM   = `CMPEQ;
                          EX_T_CMPSET = 1'b1;
                          EX_KEEP_CYC = 1'b1;
                        end
                     4: begin
                          if (T_BCC) begin
-                           // match: *Rn = Rm, R0 left untouched
+                           // match: @R0 = Rn (Rn <- old value in step 5)
                            EX_RDREG_X  = 1'b1;
-                           EX_REGNUM_X = INSTR_STATE[11:8]; // Rn
+                           EX_REGNUM_X = 4'h0;              // R0 (address)
                            EX_ALUFUNC  = `ALU_THRUX;
                            EX_WRMAAD_Z = 1'b1;
                            EX_RDREG_Y  = 1'b1;
-                           EX_REGNUM_Y = INSTR_STATE[7:4];  // Rm
+                           EX_REGNUM_Y = INSTR_STATE[11:8]; // Rn (new value)
                            EX_WRMADW_Y = 1'b1;
                            {EX_MA_ISSUE,EX_MA_WR} = 2'b11;  // write
                            EX_MA_SZ    = 2'b10;             // long
                          end
                          else begin
-                           // mismatch: R0 = loaded value, memory left untouched
+                           // mismatch: Rn = loaded value, memory left untouched
                            EX_RDTEMP_X = 1'b1;
                            EX_ALUFUNC  = `ALU_THRUX;
                            EX_WRREG_Z  = 1'b1;
-                           EX_REGNUM_Z = 4'h0; // R0
+                           EX_REGNUM_Z = INSTR_STATE[11:8]; // Rn
                            ID_INCPC    = 1'b1;
                            ID_IF_ISSUE = 1'b1;
                            DISPATCH    = 1'b1;
                          end
                        end
-                    5: begin // reached only on the match (write) path
+                    5: begin // match path only: Rn <- old value, then dispatch
+                         EX_RDTEMP_X = 1'b1;
+                         EX_ALUFUNC  = `ALU_THRUX;
+                         EX_WRREG_Z  = 1'b1;
+                         EX_REGNUM_Z = INSTR_STATE[11:8]; // Rn
                          ID_INCPC    = 1'b1;
                          ID_IF_ISSUE = 1'b1;
                          DISPATCH    = 1'b1;

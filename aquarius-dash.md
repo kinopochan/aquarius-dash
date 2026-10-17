@@ -329,9 +329,11 @@ SHAD/SHLD は GCC (`-m3`) が出す可能性があるが、既存アプリの Ma
 
 **この章も `main` にはまだ入っていない。** `hobicom-artix` の派生 (SMP 化検討)
 向けに、アトミックな compare-and-swap 命令を追加した。J-core の SMP 対応
-命令 (`CAS.L`) から着想を得たオリジナル実装で、ビット単位の互換性を
-検証したものではない (バイナリ互換を主張するものではなく、機能として
-同じ役割の命令を独自に実装したもの、という位置づけ)。
+命令 `CAS.L` とエンコーディング・セマンティクス (オペランドの役割まで) を
+合わせてある (Linux `arch/sh/include/asm/cmpxchg-cas.h` の使い方と一致)。
+当初の実装はオペランドの役割が J-core と異なっており (アドレス = Rn、
+期待値 = R0、旧値は不一致時のみ R0 に返る)、J-core 向けコードが黙って
+誤動作するため、使われ始める前に修正した。
 
 ### エンコーディングとセマンティクス
 
@@ -342,12 +344,16 @@ SHAD/SHLD は GCC (`-m3`) が出す可能性があるが、既存アプリの Ma
 
 | 命令 | オペコード | 意味 |
 |------|-----------|------|
-| `CAS.L Rm,Rn,@R0` | `2nm3` | `Rn`=アドレス、`Rm`=新値、`R0`=期待値(比較対象)。<br>`@Rn == R0` なら `@Rn = Rm` (T=1)、そうでなければ `R0 = @Rn` (T=0)。 |
+| `CAS.L Rm,Rn,@R0` | `2nm3` | `R0`=アドレス、`Rm`=期待値(比較対象)、`Rn`=新値 / 旧値の戻り先。<br>`tmp = @R0; if (tmp == Rm) { @R0 = Rn; T=1 } else T=0; Rn = tmp` |
 
-- `Rn` (bit 11:8) = 対象アドレスを持つレジスタ
-- `Rm` (bit 7:4) = 一致時に書き込む新しい値
-- `R0` = 期待する古い値 (比較対象)。**不一致時は実際の値に書き換わる**
-  (x86 の `CMPXCHG` や real SH-4A の `MOVLI.L`/`MOVCO.L` ペアと同じ用途)
+- `R0` = 対象アドレス。**R0 自体は変化しない**
+- `Rm` (bit 7:4) = 期待する古い値 (比較対象)
+- `Rn` (bit 11:8) = 一致時に書き込む新しい値。**旧値は一致・不一致どちらでも
+  Rn に返る** (一致時は tmp == Rm なので期待値が戻る。Linux はこの戻り値を
+  old と比べて成否を判定する)
+- `n == 0` (Rn が R0) の場合は J-core と同じく最後に R0 が旧値で上書きされる
+  (特別扱いしない)
+- 用途は x86 の `CMPXCHG` や real SH-4A の `MOVLI.L`/`MOVCO.L` ペアと同じ
 - サイズは long 固定 (byte/word 版は無い)
 - T ビットは比較結果を反映 (CMP/EQ と同じ)
 
@@ -360,15 +366,20 @@ SHAD/SHLD は GCC (`-m3`) が出す可能性があるが、既存アプリの Ma
 「書き込み issue の翌ステップで dispatch」という既存の待ち時間規約を踏襲):
 
 ```
-0: Rn を読んで @Rn の読み出しを issue (WB_RDMADR_W, EX_KEEP_CYC)
+0: R0 を読んで @R0 の読み出しを issue (WB_RDMADR_W, EX_KEEP_CYC)
 1: settle (ロード結果が WBUS に乗るのを待つだけ, EX_KEEP_CYC)
 2: ALU_THRUW で WBUS → TEMP に捕獲 (EX_KEEP_CYC)
-3: TEMP (X-bus) vs R0 (Y-bus) を CMPEQ で比較、T にセット (EX_KEEP_CYC)
+3: TEMP (X-bus) vs Rm (Y-bus) を CMPEQ で比較、T にセット (EX_KEEP_CYC)
 4: T_BCC を見て分岐
-     match:    @Rn = Rm の書き込みを issue (R0 は触らない)
-     mismatch: R0 = TEMP、ここで dispatch
-5: (match のときだけ) 書き込み issue の後で dispatch
+     match:    @R0 = Rn の書き込みを issue (Rn は Y-bus 経由で MADW にラッチ)
+     mismatch: Rn = TEMP、ここで dispatch
+5: (match のときだけ) Rn = TEMP してから dispatch
 ```
+
+一致側で Rn の書き戻しを step 4 に詰められないのは、step 4 では Z バスを
+アドレス (R0 → MAAD) に使っているため。書き込みデータは step 4 で MADW に
+ラッチ済みなので、step 5 で Rn を上書きしてもメモリには新値が書かれる。
+サイクル数は一致 6 / 不一致 5。
 
 `2xx0`/`2xx1`/`2xx2` (`MOV.L/W/B Rm,@Rn`) 用の既存 `4'b00??` ワイルド
 カードは、casex の評価順で `2nm3` の専用ケースより後ろに来るよう並べ
@@ -378,12 +389,17 @@ SHAD/SHLD は GCC (`-m3`) が出す可能性があるが、既存アプリの Ma
 
 - `verilog/tb_cas.v`: `cpu` モジュール全体 (decode+datapath+register+mem)
   に簡易 Wishbone メモリを繋いだ結合テスト。
-  - match ケース (期待値一致): メモリが新値に書き換わり、R0 は不変、T=1
-  - mismatch ケース (期待値不一致): メモリは不変、R0 が実際の値に、T=0
-  - 6 チェック全て PASS (メモリ内容・R0・T ビットをそれぞれ確認)
+  - match ケース (期待値一致): メモリが新値に書き換わり、Rn に旧値が返る。
+    R0 と Rm は不変、T=1
+  - mismatch ケース (期待値不一致): メモリは不変、Rn に実際の値が返る。
+    R0 と Rm は不変、T=0
+  - n == m ケース (同じレジスタを Rn/Rm に指定、値はメモリと一致): T=1、
+    メモリもそのレジスタも実質不変
+  - 15 チェック全て PASS (メモリ内容・Rn・Rm・R0・T ビット・CYC 保持)。
+    旧セマンティクスの decode.v に対しては 10 件 FAIL することも確認済み
 - ランダム/境界値の大量テストは未実施 (SHAD/SHLD 等の純粋な組み合わせ回路と
   違い、多サイクルのメモリ read-modify-write シーケンスなので、テスト
-  ケースの構築コストが高い。ディレクティッドテスト 2 本での検証に留めている)
+  ケースの構築コストが高い。ディレクティッドテスト 3 本での検証に留めている)
 
 ### バスの排他 (`CYC_O` の保持)
 
