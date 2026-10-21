@@ -277,6 +277,12 @@ Artix-7 対応自体 (RAM の `$readmemh` 化等) は `hobicom-artix` リポジ�
   既存制御パス (26 段) であり、追加した SHAD/SHLD/ROTLV/ROTRV のシフタ経路
   ではなかった。Vivado impl strategy を `Performance_ExplorePostRoutePhysOpt`
   に変更して timing closure (この経路はマージン薄めなので今後注意)。
+- 2026-10-21: hobicom-artix 側は `clk_cpu` を 44.44MHz (22.5ns) に下げていたが、
+  その後の回路追加で WNS が約 -0.9ns まで悪化していた。`mem.v` の `STATE` に
+  `(* fsm_encoding = "one_hot" *)` を付けて、上の制御パスの次状態判定を浅くした
+  結果、WNS +0.035ns (postroute phys_opt 後) で timing closure。実機でも動作確認済み。
+  ワーストパスは `DECODE.REGNUM_X`→`DECODE.RDTEMP_X` (29 段) に移った。
+  46.15MHz に戻すにはあと約 0.8ns 足りない。
 
 ### コンパイラから叩くには
 
