@@ -2110,6 +2110,7 @@ module decode(
                        WB_RDMADR_W = 1'b1;
                      end
                   1: begin //EX ID
+                       EX_KEEP_CYC = 1'b1; // keep LOCK across the idle cycle before the write
                      end
                   2: begin //MA -- ID
                        EX_FWD_W2X = 1'b1;
