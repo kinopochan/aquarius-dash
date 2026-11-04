@@ -119,6 +119,8 @@ module datapath(
     RDSFT_Z, 
     // T value for Bcc judgement
     T_BCC,
+    // T value already latched in SR (hobicom 2026-11-03, for CAS.L)
+    T_SR,
     // SR control
     T_CMPSET, T_CRYSET, T_TSTSET, T_SFTSET,
     QT_DV1SET, MQT_DV0SET, T_CLR, T_SET, MQ_CLR,
@@ -218,6 +220,8 @@ module datapath(
     input  RDSFT_Z;        // read SFTOUT to Z-BUS
 
     output T_BCC;          // T value for Bcc judgement
+    output T_SR;           // SR[T] (registered). hobicom 2026-11-03: CAS.L decides on this, not on T_BCC,
+                           // so the compare result does not reach the stall logic in the same cycle
     input  T_CMPSET;       // reflect comparator result to T
     input  T_CRYSET;       // reflect carry/borrow out to T
     input  T_TSTSET;       // reflect tst result to T
@@ -983,6 +987,7 @@ module datapath(
 // Status Register
 //----------------
     assign IBIT = SR[`I3:`I0];
+    assign T_SR = SR[`T];
 
     always @(posedge CLK)
     begin

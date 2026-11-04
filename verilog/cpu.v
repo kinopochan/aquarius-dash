@@ -227,6 +227,7 @@ module cpu(
     wire RDSFT_Z;
 
     wire T_BCC;
+    wire T_SR;     // SR[T] (hobicom 2026-11-03, CAS.L)
     wire T_CMPSET;
     wire T_CRYSET;
     wire T_TSTSET;
@@ -332,6 +333,7 @@ decode DECODE (
     .RDSFT_Z(RDSFT_Z), 
     // T value for Bcc judgement
     .T_BCC(T_BCC),
+    .T_SR(T_SR),
     // SR control
     .T_CMPSET(T_CMPSET), .T_CRYSET(T_CRYSET),
     .T_TSTSET(T_TSTSET), .T_SFTSET(T_SFTSET),
@@ -416,6 +418,7 @@ datapath DATAPATH(
     .RDSFT_Z(RDSFT_Z), 
     // T value for Bcc judgement
     .T_BCC(T_BCC),
+    .T_SR(T_SR),
     // SR control
     .T_CMPSET(T_CMPSET), .T_CRYSET(T_CRYSET),
     .T_TSTSET(T_TSTSET), .T_SFTSET(T_SFTSET),

@@ -135,7 +135,7 @@ module decode(
     // read controls to Z-BUS
     RDSFT_Z, 
     // T value for Bcc judgement
-    T_BCC,
+    T_BCC, T_SR,
     // SR control
     T_CMPSET, T_CRYSET, T_TSTSET, T_SFTSET,
     QT_DV1SET, MQT_DV0SET, T_CLR, T_SET, MQ_CLR,
@@ -245,6 +245,7 @@ module decode(
     output RDSFT_Z;        // read SFTOUT to Z-BUS
 
     input  T_BCC;          // T value for Bcc judgement
+    input  T_SR;           // SR[T] (registered). hobicom 2026-11-03: used by CAS.L instead of T_BCC
     output T_CMPSET;       // reflect comparator result to T
     output T_CRYSET;       // reflect carry/borrow out to T
     output T_TSTSET;       // reflect tst result to T
@@ -1072,7 +1073,7 @@ module decode(
 //------------------------------------
 // Output Signals : A huge truth table
 //------------------------------------
-    always @(INSTR_STATE or INSTR_SEQ or T_BCC or NEXT_ID_STALL)
+    always @(INSTR_STATE or INSTR_SEQ or T_BCC or T_SR or NEXT_ID_STALL)
     begin
         // ---- CAUTION ----------------------------------------------------------------
         // To simplify the RTL description rule, 
@@ -1516,9 +1517,15 @@ module decode(
                          EX_T_CMPSET = 1'b1;
                          EX_KEEP_CYC = 1'b1;
                        end
-                    4: begin
-                         if (T_BCC) begin
-                           // match: @R0 = Rn (Rn <- old value in step 5)
+                    4: begin // wait: the compare of step 3 is latched into SR[T] at the end of this slot
+                         // hobicom 2026-11-03 (docs/shared-ram-cas-plan.md §7): deciding on the combinational
+                         // T_BCC here put compare -> T -> write? -> REG_CONF -> stall -> PC/ADR enable into
+                         // one cycle (the critical path on artix). Wait one slot and decide on T_SR in step 5.
+                         EX_KEEP_CYC = 1'b1; // keep the lock across the wait (no gap before the write)
+                       end
+                    5: begin
+                         if (T_SR) begin
+                           // match: @R0 = Rn (Rn <- old value in step 6)
                            EX_RDREG_X  = 1'b1;
                            EX_REGNUM_X = 4'h0;              // R0 (address)
                            EX_ALUFUNC  = `ALU_THRUX;
@@ -1540,7 +1547,7 @@ module decode(
                            DISPATCH    = 1'b1;
                          end
                        end
-                    5: begin // match path only: Rn <- old value, then dispatch
+                    6: begin // match path only: Rn <- old value, then dispatch
                          EX_RDTEMP_X = 1'b1;
                          EX_ALUFUNC  = `ALU_THRUX;
                          EX_WRREG_Z  = 1'b1;
