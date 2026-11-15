@@ -76,7 +76,9 @@ module cpu(
     EVENT_ACK_O, 
     EVENT_INFO_I,
 // SLEPP
-    SLP_O
+    SLP_O,
+// RMW lock
+    LOCK_O
     );
 
 //-------------------
@@ -100,6 +102,7 @@ module cpu(
     input  [11:0] EVENT_INFO_I; // Hardware Exception Event Information
     // SLEEP
     output SLP_O;         // SLEEP output
+    output LOCK_O;        // read-modify-write (CAS.L / TAS.B) in progress
     
 //-----------------------
 // External Signal Buffer
@@ -147,6 +150,12 @@ module cpu(
     // SLP_O-------------------------------
     wire   SLP; // use it internally
     assign SLP_O = SLP;
+    // LOCK_O------------------------------
+    // 1 from the first cycle of the RMW read until the cycle before its
+    // write (CAS.L mismatch: until the next access). An arbiter that sees
+    // LOCK_O=1 in cycle k must keep this master's grant in cycle k+1.
+    wire   LOCK; // use it internally
+    assign LOCK_O = LOCK;
     // ------------------------------------        
 
 //-----------------
@@ -218,6 +227,7 @@ module cpu(
     wire RDSFT_Z;
 
     wire T_BCC;
+    wire T_SR;     // SR[T] (hobicom 2026-11-03, CAS.L)
     wire T_CMPSET;
     wire T_CRYSET;
     wire T_TSTSET;
@@ -256,7 +266,9 @@ mem MEM (
     // data access control
     .MA_ISSUE(MA_ISSUE), .KEEP_CYC(KEEP_CYC),
     .MA_WR(MA_WR), .MA_SZ(MA_SZ),
-    .MA_AD(MA_AD), .MA_DW(MA_DW), .MA_DR(MA_DR)
+    .MA_AD(MA_AD), .MA_DW(MA_DW), .MA_DR(MA_DR),
+    // read-modify-write lock
+    .LOCK(LOCK)
     );
 
 decode DECODE (
@@ -321,6 +333,7 @@ decode DECODE (
     .RDSFT_Z(RDSFT_Z), 
     // T value for Bcc judgement
     .T_BCC(T_BCC),
+    .T_SR(T_SR),
     // SR control
     .T_CMPSET(T_CMPSET), .T_CRYSET(T_CRYSET),
     .T_TSTSET(T_TSTSET), .T_SFTSET(T_SFTSET),
@@ -405,6 +418,7 @@ datapath DATAPATH(
     .RDSFT_Z(RDSFT_Z), 
     // T value for Bcc judgement
     .T_BCC(T_BCC),
+    .T_SR(T_SR),
     // SR control
     .T_CMPSET(T_CMPSET), .T_CRYSET(T_CRYSET),
     .T_TSTSET(T_TSTSET), .T_SFTSET(T_SFTSET),

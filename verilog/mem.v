@@ -254,7 +254,9 @@ module mem(
     IF_DR, IF_BUS, IF_STALL,
 // data access control
     MA_ISSUE, KEEP_CYC, MA_WR, MA_SZ,
-    MA_AD, MA_DW, MA_DR
+    MA_AD, MA_DW, MA_DR,
+// read-modify-write lock
+    LOCK
     );
 //-------------------
 // Module I/O Signals
@@ -286,6 +288,7 @@ module mem(
     input  [31:0] MA_AD;  // memory access address
     input  [31:0] MA_DW;  // memory write data
     output [31:0] MA_DR;  // memory read data
+    output LOCK;          // read-modify-write in progress (= NEXT_KEEP_CYC)
 
 
 //-----------------
@@ -311,6 +314,7 @@ module mem(
     reg    [15:0] IF_BUF;    // buffer to keep the lower 16bit of previous long fetch
     reg    IF_KEEP;          // fetching was from "long boundary" AND IF_WIDTH=1
     reg    IF_FORCE;         // IF_JP=1 or next fetch address is from "long boundary"
+    (* fsm_encoding = "one_hot" *) // timing: shallower next-state decode on the Bcc->fetch path
     reg    [2:0] STATE;      // state
     reg    [2:0] NEXT_STATE; // next state
     reg    [1:0] ACCESS_SZ;  // current data access size
@@ -702,6 +706,9 @@ module mem(
             CYC <= CYC_PREV;
         end
     end
+    // lock for a multi-master arbiter: unlike CYC, this is not raised by
+    // NXTBUS, so ordinary back-to-back accesses do not hold it
+    assign LOCK = NEXT_KEEP_CYC;
 
 //----------------------------------------
 // SEL : WISHBONE show valid data position

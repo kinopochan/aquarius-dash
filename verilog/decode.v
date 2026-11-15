@@ -135,7 +135,7 @@ module decode(
     // read controls to Z-BUS
     RDSFT_Z, 
     // T value for Bcc judgement
-    T_BCC,
+    T_BCC, T_SR,
     // SR control
     T_CMPSET, T_CRYSET, T_TSTSET, T_SFTSET,
     QT_DV1SET, MQT_DV0SET, T_CLR, T_SET, MQ_CLR,
@@ -245,6 +245,7 @@ module decode(
     output RDSFT_Z;        // read SFTOUT to Z-BUS
 
     input  T_BCC;          // T value for Bcc judgement
+    input  T_SR;           // SR[T] (registered). hobicom 2026-11-03: used by CAS.L instead of T_BCC
     output T_CMPSET;       // reflect comparator result to T
     output T_CRYSET;       // reflect carry/borrow out to T
     output T_TSTSET;       // reflect tst result to T
@@ -1072,7 +1073,7 @@ module decode(
 //------------------------------------
 // Output Signals : A huge truth table
 //------------------------------------
-    always @(INSTR_STATE or INSTR_SEQ or T_BCC or NEXT_ID_STALL)
+    always @(INSTR_STATE or INSTR_SEQ or T_BCC or T_SR or NEXT_ID_STALL)
     begin
         // ---- CAUTION ----------------------------------------------------------------
         // To simplify the RTL description rule, 
@@ -1481,10 +1482,87 @@ module decode(
         //============================================
           4'b0010 : // 2xxx
             casex (INSTR_STATE[3:0])
+        //--------------------------------------------------------
+        // CAS.L Rm, Rn, @R0 (2nm3)  custom, J-core compatible
+        //
+        // Atomic compare-and-swap:
+        //   tmp = @R0; if (tmp == Rm) { @R0 = Rn; T=1 } else T=0; Rn = tmp
+        //--------------------------------------------------------
+              4'b0011 : // 2nm3
+                begin
+                  case (INSTR_SEQ)
+                    0: begin // issue read of @R0
+                         EX_RDREG_X  = 1'b1;
+                         EX_REGNUM_X = 4'h0;              // R0 (address)
+                         EX_ALUFUNC  = `ALU_THRUX;
+                         EX_WRMAAD_Z = 1'b1;
+                         {EX_MA_ISSUE,EX_MA_WR} = 2'b10;  // read
+                         EX_MA_SZ    = 2'b10;             // long
+                         WB_RDMADR_W = 1'b1;
+                         EX_KEEP_CYC = 1'b1; // hold CYC_O across the whole read-modify-write
+                       end
+                    1: begin // settle: wait for the load to reach WBUS
+                         EX_KEEP_CYC = 1'b1;
+                       end
+                    2: begin // capture loaded value into TEMP
+                         EX_ALUFUNC = `ALU_THRUW; // Z = WBUS
+                         EX_WRTEMP_Z = 1'b1;
+                         EX_KEEP_CYC = 1'b1;
+                       end
+                    3: begin // compare TEMP (loaded value) against Rm (expected)
+                         EX_RDTEMP_X = 1'b1;
+                         EX_RDREG_Y  = 1'b1;
+                         EX_REGNUM_Y = INSTR_STATE[7:4]; // Rm
+                         EX_CMPCOM   = `CMPEQ;
+                         EX_T_CMPSET = 1'b1;
+                         EX_KEEP_CYC = 1'b1;
+                       end
+                    4: begin // wait: the compare of step 3 is latched into SR[T] at the end of this slot
+                         // hobicom 2026-11-03 (docs/shared-ram-cas-plan.md §7): deciding on the combinational
+                         // T_BCC here put compare -> T -> write? -> REG_CONF -> stall -> PC/ADR enable into
+                         // one cycle (the critical path on artix). Wait one slot and decide on T_SR in step 5.
+                         EX_KEEP_CYC = 1'b1; // keep the lock across the wait (no gap before the write)
+                       end
+                    5: begin
+                         if (T_SR) begin
+                           // match: @R0 = Rn (Rn <- old value in step 6)
+                           EX_RDREG_X  = 1'b1;
+                           EX_REGNUM_X = 4'h0;              // R0 (address)
+                           EX_ALUFUNC  = `ALU_THRUX;
+                           EX_WRMAAD_Z = 1'b1;
+                           EX_RDREG_Y  = 1'b1;
+                           EX_REGNUM_Y = INSTR_STATE[11:8]; // Rn (new value)
+                           EX_WRMADW_Y = 1'b1;
+                           {EX_MA_ISSUE,EX_MA_WR} = 2'b11;  // write
+                           EX_MA_SZ    = 2'b10;             // long
+                         end
+                         else begin
+                           // mismatch: Rn = loaded value, memory left untouched
+                           EX_RDTEMP_X = 1'b1;
+                           EX_ALUFUNC  = `ALU_THRUX;
+                           EX_WRREG_Z  = 1'b1;
+                           EX_REGNUM_Z = INSTR_STATE[11:8]; // Rn
+                           ID_INCPC    = 1'b1;
+                           ID_IF_ISSUE = 1'b1;
+                           DISPATCH    = 1'b1;
+                         end
+                       end
+                    6: begin // match path only: Rn <- old value, then dispatch
+                         EX_RDTEMP_X = 1'b1;
+                         EX_ALUFUNC  = `ALU_THRUX;
+                         EX_WRREG_Z  = 1'b1;
+                         EX_REGNUM_Z = INSTR_STATE[11:8]; // Rn
+                         ID_INCPC    = 1'b1;
+                         ID_IF_ISSUE = 1'b1;
+                         DISPATCH    = 1'b1;
+                       end
+                    default: ;
+                  endcase
+                end
         //-----------------------------------
         // MOV.L/W/B Rm, @Rn (2nm2/2nm1/2nm0)
         //-----------------------------------
-              4'b00?? : // 2xx0, 2xx1, 2xx2 (don't care 2xx3)
+              4'b00?? : // 2xx0, 2xx1, 2xx2 (2xx3 handled above as CAS.L)
                 begin              
                   EX_RDREG_X = 1'b1;
                   EX_REGNUM_X = INSTR_STATE[11:8]; //@Rn
@@ -2039,6 +2117,7 @@ module decode(
                        WB_RDMADR_W = 1'b1;
                      end
                   1: begin //EX ID
+                       EX_KEEP_CYC = 1'b1; // keep LOCK across the idle cycle before the write
                      end
                   2: begin //MA -- ID
                        EX_FWD_W2X = 1'b1;
@@ -2115,6 +2194,45 @@ module decode(
                      end
                   default : ;
                 endcase
+        //------------------------
+        // SHAD Rm, Rn (4nmC)  custom
+        // SHLD Rm, Rn (4nmD)  custom
+        //------------------------
+              6'b??110? :
+                begin
+                  EX_RDREG_X  = 1'b1;
+                  EX_REGNUM_X = INSTR_STATE[11:8]; // Rn
+                  EX_RDREG_Y  = 1'b1;
+                  EX_REGNUM_Y = INSTR_STATE[7:4];  // Rm
+                  EX_SFTFUNC  = INSTR_STATE[0] ? `SHLD : `SHAD;
+                  EX_RDSFT_Z  = 1'b1;              // T is unchanged, so EX_T_SFTSET is not set
+                  EX_WRREG_Z  = 1'b1;
+                  EX_REGNUM_Z = INSTR_STATE[11:8]; // Rn
+                  ID_INCPC    = 1'b1;
+                  ID_IF_ISSUE = 1'b1;
+                  DISPATCH    = 1'b1;
+                end
+        //--------------------------------
+        // ROTLV R0,Rn (4n34)  custom
+        // ROTRV R0,Rn (4n35)  custom
+        //--------------------------------
+              6'b11010? :
+                begin
+                  if (INSTR_STATE[7:6] == 2'b00) // avoid aliasing 4n74/4nB4/4nF4 etc.
+                    begin
+                      EX_RDREG_X  = 1'b1;
+                      EX_REGNUM_X = INSTR_STATE[11:8]; // Rn
+                      EX_RDREG_Y  = 1'b1;
+                      EX_REGNUM_Y = 4'h0;              // R0 = rotate amount
+                      EX_SFTFUNC  = INSTR_STATE[0] ? `ROTRV : `ROTLV;
+                      EX_RDSFT_Z  = 1'b1;
+                      EX_WRREG_Z  = 1'b1;
+                      EX_REGNUM_Z = INSTR_STATE[11:8]; // Rn
+                    end
+                  ID_INCPC    = 1'b1;
+                  ID_IF_ISSUE = 1'b1;
+                  DISPATCH    = 1'b1;
+                end
         //---------------
         // Default = NOP
         //---------------
