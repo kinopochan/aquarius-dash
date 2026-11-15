@@ -39,15 +39,24 @@ minimal set of modifications on top (branch `main`, aka **Aquarius'** / *aquariu
 - The `original` branch is a verbatim mirror of the SVN trunk content.
 - The CPU implements a subset of the SH-2 instruction set.
 - FPGA target in the original project is Xilinx Spartan. For Cyclone V usage, see the parent project.
-- Modifications on `main` affect only `verilog/decode.v`, `verilog/defines.v`, `verilog/mult.v`, plus new testbenches `verilog/tb_mult.v` and `verilog/tb_div.v`. All other files are untouched.
-- **Branch `feature/custom-shift-rotate-ops`** (not yet merged into `main`): adds
+- Modifications on `main`: DIVU/DIVS division and a faster multiplier
+  (`verilog/decode.v`, `verilog/defines.v`, `verilog/mult.v`), Fmax tuning
+  (`verilog/datapath.v`, `verilog/mem.v`), plus new testbenches
+  `verilog/tb_mult.v` and `verilog/tb_div.v`.
+- The last state verified on Cyclone V (5CEFA2) is tag
+  `hw-verified-20260429-cpu-fmax-pc-bypass`. The changes below were merged
+  from `feature/custom-shift-rotate-ops` on 2026-11-15 and are verified on
+  Artix-7 / Kintex-7 (hobicom), not yet on Cyclone V.
+- Shift/rotate and atomic extensions: adds
   custom SHAD/SHLD (SH-3 opcode-compatible) and ROTLV/ROTRV (fully custom) shift/rotate
   instructions on top of `main`. Touches `verilog/decode.v`, `verilog/defines.v`,
   `verilog/datapath.v`, plus new testbenches `verilog/tb_shift_unit.v` and
   `verilog/tb_cpu_custom.v`. See [`aquarius-dash.md`](aquarius-dash.md) section 7.
   Also adds a `CAS.L` atomic compare-and-swap instruction (`2nm3`, encoding and
-  operand semantics matched to J-core's `CAS.L`) touching only
-  `verilog/decode.v`, plus `verilog/tb_cas.v`. See section 9.
+  operand semantics matched to J-core's `CAS.L`) and a `LOCK_O` output for
+  multi-master arbitration, touching `verilog/decode.v`, `verilog/datapath.v`,
+  `verilog/mem.v` and `verilog/cpu.v`, plus `verilog/tb_cas.v` and
+  `verilog/tb_lock.v`. See section 9.
 
 ## Compatibility
 

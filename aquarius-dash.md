@@ -25,15 +25,25 @@ SH-2A の同名命令 (`DIVU R0,Rn` = `4n84`, `DIVS R0,Rn` = `4n94`) とは無�
 動かない (binutils `-isa=sh2a` のアセンブル結果で確認)。
 
 `SHAD`/`SHLD`/`ROTLV`/`ROTRV`/`CAS.L` は `feature/custom-shift-rotate-ops`
-ブランチにのみあり、`main` には未マージ。
+ブランチで開発し、2026-11-15 に `main` へマージした (ほびこん
+`hobicom-artix` / `hobicom-kintex` で使っているコアを `main` とする)。
+マージ直前の `main` (Cyclone V 5CEFA2 で実機確認した最後の版) はタグ
+`hw-verified-20260429-cpu-fmax-pc-bypass` (`fe09d83`)。マージ後の RTL は
+Cyclone V では未確認。
 
-## 改造コミット 3 本
+## 主な改造コミット
 
 | commit | 日付 | 主題 |
 |--------|------|------|
 | `ee554b9` | 2026-04-18 | DIVU/DIVS 追加 (非復元法, 35 cyc) |
 | `f78d17f` | 2026-04-19 | 除算を DSP Newton-Raphson に差し替え (25 cyc) |
 | `6b9d47b` | 2026-04-19 | 乗算器 31×16 → 32×32 単サイクル化 & DIVOP 14 cyc へ |
+| `7179e01`〜`fe09d83` | 2026-04-28〜29 | Fmax 改善 (XBUS/YBUS 2 段化、PC 更新のバイパス、5CEFA2 に収める) |
+| `ad9739c` | 2026-09-16 | SHAD/SHLD/ROTLV/ROTRV 追加 (7 章) |
+| `01caddc`〜`c6a9b59` | 2026-09-18〜10-17 | CAS.L 追加、J-core 互換のオペランドに修正 (9 章) |
+| `43819cb` | 2026-10-21 | `mem.v` の STATE を one-hot 化 (タイミング改善、7 章) |
+| `cdb565d` | 2026-10-27 | `LOCK_O` 追加、TAS.B のロックの隙間を修正 (9 章) |
+| `f527b40` | 2026-11-04 | CAS.L の一致判定を SR[T] で 1 サイクル後に (9 章) |
 
 (`83e9efc` は tb_mult 追加のテストベンチのみ)
 
@@ -181,11 +191,14 @@ wire        [63:0] MULT_RESULT = MULT_RAW[63:0];
 他のファイル (cpu.v, datapath.v, memory*.v, top.v, sys.v 等) は
 SVN trunk **ノータッチ**。
 
-**[branch: `feature/custom-shift-rotate-ops`, 未マージ]** 上記に加え、
+**[2026-09〜11、旧 `feature/custom-shift-rotate-ops`]** 上記に加え、
 `verilog/datapath.v` (+16 行, バレルシフタ配線)、`verilog/defines.v` (+4 行)、
 `verilog/decode.v` (+39 行, SHAD/SHLD/ROTLV/ROTRV デコード) を変更。
 `verilog/tb_shift_unit.v` / `verilog/tb_cpu_custom.v` を新規追加。
-詳細は本ファイル 7 章参照。
+詳細は本ファイル 7 章参照。CAS.L / `LOCK_O` では `verilog/decode.v`・
+`verilog/datapath.v` (`T_SR` の出力)・`verilog/mem.v` (one-hot、`LOCK_O`)・
+`verilog/cpu.v` (`LOCK_O` / `T_SR` の配線) を変更し、`verilog/tb_cas.v` /
+`verilog/tb_lock.v` を新規追加 (9 章)。
 
 ---
 
@@ -222,10 +235,11 @@ static inline uint32_t divu(uint32_t n, uint32_t m) {
 
 ---
 
-## 7. [branch: `feature/custom-shift-rotate-ops`, 未マージ] 追加命令: SHAD / SHLD / ROTLV / ROTRV
+## 7. 追加命令: SHAD / SHLD / ROTLV / ROTRV
 
-**この章は `main` にはまだ入っていない。** ブランチ `feature/custom-shift-rotate-ops`
-(commit `ad9739c`) の内容。マージ後は章番号を含めて見直すこと。
+ブランチ `feature/custom-shift-rotate-ops` (commit `ad9739c`) で追加し、
+2026-11-15 に `main` へマージした。章番号はほびこん側の文書から参照されて
+いるので、欠番 (6 章・8 章) のまま変えない。
 
 ### 背景
 
@@ -348,9 +362,10 @@ SHAD/SHLD は GCC (`-m3`) が出す可能性があるが、既存アプリの Ma
 
 ---
 
-## 9. [branch: `feature/custom-shift-rotate-ops`, 未マージ] 追加命令: CAS.L
+## 9. 追加命令: CAS.L
 
-**この章も `main` にはまだ入っていない。** `hobicom-artix` の派生 (SMP 化検討)
+(ブランチ `feature/custom-shift-rotate-ops` で追加し、2026-11-15 に `main` へ
+マージ) `hobicom-artix` の派生 (SMP 化検討)
 向けに、アトミックな compare-and-swap 命令を追加した。J-core の SMP 対応
 命令 `CAS.L` とエンコーディング・セマンティクス (オペランドの役割まで) を
 合わせてある (Linux `arch/sh/include/asm/cmpxchg-cas.h` の使い方と一致)。
@@ -380,7 +395,7 @@ SHAD/SHLD は GCC (`-m3`) が出す可能性があるが、既存アプリの Ma
 - サイズは long 固定 (byte/word 版は無い)
 - T ビットは比較結果を反映 (CMP/EQ と同じ)
 
-### 実装 (decode.v のみ、defines.v/datapath.v は無改造)
+### 実装 (当初は decode.v のみ。2026-11-04 から datapath.v / cpu.v も、末尾の改訂参照)
 
 既存の ALU 定数 (`ALU_THRUX`, `ALU_THRUW`, `CMPEQ`) と `TEMP` スクラッチ
 レジスタだけで実装でき、`SFTFUNC` 等の新規追加は不要だった。5〜6 ステップ
@@ -393,16 +408,18 @@ SHAD/SHLD は GCC (`-m3`) が出す可能性があるが、既存アプリの Ma
 1: settle (ロード結果が WBUS に乗るのを待つだけ, EX_KEEP_CYC)
 2: ALU_THRUW で WBUS → TEMP に捕獲 (EX_KEEP_CYC)
 3: TEMP (X-bus) vs Rm (Y-bus) を CMPEQ で比較、T にセット (EX_KEEP_CYC)
-4: T_BCC を見て分岐
+4: 待つだけ (比較結果が SR[T] に入る、EX_KEEP_CYC)   ← 2026-11-04 に追加
+5: T_SR (= SR[T]) を見て分岐
      match:    @R0 = Rn の書き込みを issue (Rn は Y-bus 経由で MADW にラッチ)
      mismatch: Rn = TEMP、ここで dispatch
-5: (match のときだけ) Rn = TEMP してから dispatch
+6: (match のときだけ) Rn = TEMP してから dispatch
 ```
 
-一致側で Rn の書き戻しを step 4 に詰められないのは、step 4 では Z バスを
-アドレス (R0 → MAAD) に使っているため。書き込みデータは step 4 で MADW に
-ラッチ済みなので、step 5 で Rn を上書きしてもメモリには新値が書かれる。
-サイクル数は一致 6 / 不一致 5。
+一致側で Rn の書き戻しを step 5 に詰められないのは、step 5 では Z バスを
+アドレス (R0 → MAAD) に使っているため。書き込みデータは step 5 で MADW に
+ラッチ済みなので、step 6 で Rn を上書きしてもメモリには新値が書かれる。
+サイクル数は一致 7 / 不一致 6 (2026-11-04 より前は step 4 が無く、
+組み合わせの T_BCC で判定して一致 6 / 不一致 5)。
 
 `2xx0`/`2xx1`/`2xx2` (`MOV.L/W/B Rm,@Rn`) 用の既存 `4'b00??` ワイルド
 カードは、casex の評価順で `2nm3` の専用ケースより後ろに来るよう並べ
@@ -433,7 +450,8 @@ read から write の後まで保持する、Wishbone classic の RMW サイク�
 `NEXT_KEEP_CYC <= KEEP_CYC` を取り込んで `CYC_O` に反映するため、
 **アイドル区間も含めて `EX_KEEP_CYC` を立て続ける必要がある**
 (`TAS.B` は read と write の間が 1 ステップなので step0 だけで足りるが、
-`CAS.L` は 3 ステップ空くので step0〜3 で立てる)。step4 以降は立てず、
+`CAS.L` は 3 ステップ空くので step0〜3 で立てる。2026-11-04 以降は待ちの
+step4 が増えたので step0〜4)。step4 以降は立てず、
 write 完了 (不一致なら比較完了) の後で `CYC_O` が落ちる。
 
 当初のコミット (`01caddc`) はこの `EX_KEEP_CYC` を立て忘れていて、read と write
@@ -481,3 +499,20 @@ write 完了 (不一致なら比較完了) の後で `CYC_O` が落ちる。
   1 サイクル 0 に force) で違反がちょうど 1 件出る。修正前の `decode.v` では
   TAS.B 2 回ぶんの違反 2 件を出す。`tb_cas` / `tb_cpu_custom` / `tb_div` /
   `tb_mult` は PASS のまま
+
+### 一致判定を SR[T] で行う形に変更 (2026-11-04、`f527b40`)
+
+step 4 で組み合わせの `T_BCC` を見て分岐していたため、比較 → T → 書くか
+どうか → `EX_RDREG_X/Y` → `REG_CONF` → `NEXT_ID_STALL` → PC/ADR のイネーブル
+が 1 サイクルに入り、`hobicom-artix` (XC7A50T、46MHz) のクリティカルパスに
+なっていた。
+
+- `datapath.v` から SR[T] を `T_SR` として出し (`cpu.v` で `decode.v` へ配線)、
+  CAS.L は待ちの step 4 を挟んで step 5 で `T_SR` を見て分岐する。
+  step 4 も `EX_KEEP_CYC` を立てるので、`LOCK_O` に隙間はできない
+- CAS.L が 1 サイクル延びる (一致 7 / 不一致 6)。他の命令は変わらない
+- `decode.v` の真理値表の感度リストに `T_SR` を追加
+- hobicom 側の結果 (2026-11-03): artix の WNS +0.041 → +0.161 (失敗パス 0)。
+  kintex の NCPU=8 で SMPTEST 全部 OK、raytrace / teapot のベンチマークは不変
+- `tb_cas` / `tb_lock` / `tb_cpu_custom` / `tb_div` / `tb_mult` /
+  `tb_shift_unit` は PASS (2026-11-15 に再実行)
